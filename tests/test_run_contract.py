@@ -212,6 +212,24 @@ def test_analysis_manifest_minimal_construction_applies_defaults():
 
 
 @pytest.mark.unit
+def test_analysis_manifest_accepts_none_for_provider_and_models():
+    # Legacy-imported manifests (Phase 0B) genuinely don't know the provider/model
+    # that produced an old report -- these fields must accept None rather than
+    # forcing a fabricated placeholder string.
+    manifest = AnalysisManifest(
+        **{
+            **_manifest_dict(),
+            "analysis_provider": None,
+            "quick_model": None,
+            "deep_model": None,
+        }
+    )
+    assert manifest.analysis_provider is None
+    assert manifest.quick_model is None
+    assert manifest.deep_model is None
+
+
+@pytest.mark.unit
 def test_analysis_manifest_rejects_invalid_analysis_status():
     with pytest.raises(ValidationError):
         AnalysisManifest(**_manifest_dict(analysis_status="not_a_status"))

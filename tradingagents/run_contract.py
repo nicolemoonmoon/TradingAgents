@@ -223,9 +223,12 @@ class AnalysisManifest(_RunArtifactBase):
     analysis_date: AnalysisDate
     created_at: datetime
     analysis_status: AnalysisStatus
-    analysis_provider: str
-    quick_model: str
-    deep_model: str
+    # Optional: a live Phase 1A run always knows these; the Phase 0B legacy
+    # importer genuinely doesn't (old markdown reports carry no provider/model
+    # data) and must record that as None rather than a fabricated placeholder.
+    analysis_provider: str | None = None
+    quick_model: str | None = None
+    deep_model: str | None = None
     selected_agents: list[AgentId] = Field(default_factory=list)
     draft_rating: PortfolioRating | None = None
     trader_action: TraderAction | None = None
