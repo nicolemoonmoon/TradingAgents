@@ -44,12 +44,18 @@ dev = [
 bedrock = [
     "langchain-aws>=1.5.0",
 ]
+# Read-only backend API (Phase 2A) for browsing existing run artifacts.
+# Optional so CLI-only installs stay lean: pip install "tradingagents[api]".
+api = [
+    "fastapi>=0.115",
+    "uvicorn>=0.32",
+]
 
 [project.scripts]
 tradingagents = "cli.main:app"
 
 [tool.setuptools.packages.find]
-include = ["tradingagents*", "cli*"]
+include = ["tradingagents*", "cli*", "api*"]
 
 [tool.setuptools.package-data]
 cli = ["static/*"]
@@ -81,6 +87,7 @@ ignore = ["E501"]
 
 [tool.ruff.lint.per-file-ignores]
 "**/__init__.py" = ["F401"]   # intentional re-exports
+"api/main.py" = ["B008"]      # FastAPI's own Depends(...)-in-default-arg idiom
 
 [tool.ruff.lint.isort]
 # Keep multiple aliased names from one module in a single combined import block
