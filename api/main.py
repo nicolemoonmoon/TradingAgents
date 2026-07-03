@@ -1,7 +1,7 @@
-"""Read-only backend API for browsing existing run artifacts (Phase 2A).
+"""Backend API for run artifacts: read-only browsing (Phase 2A) plus a
+minimal job worker to start new analyses (Phase 2B).
 
-Does not start new analyses, does not call any LLM/DeepSeek client, does not
-serve a UI. Every endpoint only reads files already written by
+Read endpoints only read files already written by
 ``tradingagents.deepseek_analysis_runner``/``tradingagents.streaming_analysis_runner``/
 ``tradingagents.legacy_importer`` under a configured ``runs_dir``
 (``api.config.get_runs_dir``).
@@ -16,12 +16,29 @@ path from the caller at all: ``section`` is a closed enum built from
 ``run_contract.REPORT_TREE`` (code, not user input), so there is no path
 string for a request to influence beyond picking one of a fixed set of keys.
 
+``POST /api/runs`` (Phase 2B) starts a new analysis: it validates the
+request, synchronously writes a minimal ``queued`` placeholder
+(``status.json`` + a ``run_queued`` event) so a client polling
+``GET .../status`` immediately after the response never sees a spurious
+404, then hands off to a background ``threading.Thread`` running
+``StreamingDeepSeekAnalysisRunner`` (not ``BackgroundTasks`` -- see the
+module docstring in ``tradingagents/streaming_analysis_runner.py`` history/
+the Phase 2B plan for why: ``TestClient`` waits for ``BackgroundTasks`` to
+finish before returning, which makes "the response doesn't block on
+analysis completion" untestable). Duplicate ``run_id``s (same ticker,
+same wall-clock second, or a genuine pre-existing run) are rejected with
+``409`` before anything is written.
+
 Run with: ``uvicorn api.main:app --reload`` (requires the ``api`` extra:
 ``pip install -e ".[api]"``).
 """
 
 from __future__ import annotations
 
+import logging
+import threading
+from collections.abc import Callable
+from datetime import datetime
 from enum import Enum
 from pathlib import Path
 
@@ -29,9 +46,17 @@ from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import PlainTextResponse
 from pydantic import ValidationError
 
-from api.config import get_runs_dir
-from api.schemas import RunSummary
-from tradingagents.run_artifact_writer import ArtifactPathError, resolve_artifact_path
+from api.config import get_clock, get_runs_dir
+from api.schemas import RunSummary, StartAnalysisRequest, StartAnalysisResponse
+from tradingagents.dataflows.utils import safe_ticker_component
+from tradingagents.default_config import DEFAULT_CONFIG
+from tradingagents.graph.trading_graph import TradingAgentsGraph
+from tradingagents.run_artifact_writer import (
+    ArtifactPathError,
+    append_run_event,
+    resolve_artifact_path,
+    write_run_status,
+)
 from tradingagents.run_contract import (
     ANALYSIS_MANIFEST_FILENAME,
     COMPLETE_REPORT_FILENAME,
@@ -39,11 +64,24 @@ from tradingagents.run_contract import (
     REPORT_TREE,
     STATUS_FILENAME,
     AnalysisManifest,
+    AnalysisStatus,
+    EventType,
+    ReviewStatus,
     RunEvent,
     RunStatus,
+    derive_overall_status,
 )
+from tradingagents.streaming_analysis_runner import StreamingDeepSeekAnalysisRunner
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="TradingAgents Run Artifacts API", version="0.1.0")
+
+# In-process claim set guarding against two concurrent POSTs computing the
+# same run_id (same ticker, same wall-clock second). Does NOT protect
+# against multi-process/multi-replica deployments -- see the Phase 2B plan.
+_IN_FLIGHT_RUN_IDS: set[str] = set()
+_IN_FLIGHT_LOCK = threading.Lock()
 
 # section -> (subdir, filename), built from REPORT_TREE so it can never drift
 # from the actual on-disk layout. "complete_report" is the one entry outside
@@ -166,3 +204,89 @@ def get_report(
             detail=f"report section {section.value!r} not available for run {run_id!r}",
         )
     return PlainTextResponse(path.read_text(encoding="utf-8"), media_type="text/markdown")
+
+
+def _build_graph(request: StartAnalysisRequest) -> TradingAgentsGraph:
+    """Construct the real graph for a live run. The one seam tests replace
+    wholesale (via ``monkeypatch.setattr("api.main._build_graph", ...)``) so
+    endpoint tests never touch real LLM clients."""
+    config = DEFAULT_CONFIG.copy()
+    if request.quick_model:
+        config["quick_think_llm"] = request.quick_model
+    if request.deep_model:
+        config["deep_think_llm"] = request.deep_model
+    selected_analysts = request.selected_analysts or ("market", "social", "news", "fundamentals")
+    return TradingAgentsGraph(selected_analysts=selected_analysts, config=config, debug=False)
+
+
+def _execute_analysis_job(run_id: str, request: StartAnalysisRequest, runs_dir: Path) -> None:
+    """Background thread target. ``StreamingDeepSeekAnalysisRunner.run()`` already
+    records failure to status.json/events.jsonl and re-raises -- this wrapper
+    just logs it (so it isn't silently lost) and always releases the claim."""
+    try:
+        graph = _build_graph(request)
+        runner = StreamingDeepSeekAnalysisRunner(graph, runs_dir=runs_dir)
+        runner.run(
+            request.ticker,
+            request.analysis_date,
+            asset_type=request.asset_type,
+            run_id=run_id,
+            allow_existing_queued_run=True,
+        )
+    except Exception:
+        logger.exception("background analysis job %r failed", run_id)
+    finally:
+        with _IN_FLIGHT_LOCK:
+            _IN_FLIGHT_RUN_IDS.discard(run_id)
+
+
+@app.post("/api/runs", status_code=202, response_model=StartAnalysisResponse)
+def start_analysis(
+    request: StartAnalysisRequest,
+    runs_dir: Path = Depends(get_runs_dir),
+    clock: Callable[[], datetime] = Depends(get_clock),
+) -> StartAnalysisResponse:
+    created_at = clock()
+    run_id = f"{safe_ticker_component(request.ticker)}_{created_at:%Y%m%d_%H%M%S}"
+    run_dir = runs_dir / run_id
+
+    with _IN_FLIGHT_LOCK:
+        if run_id in _IN_FLIGHT_RUN_IDS or run_dir.exists():
+            raise HTTPException(
+                status_code=409,
+                detail=f"run {run_id!r} already exists or is in progress; retry in a moment",
+            )
+        _IN_FLIGHT_RUN_IDS.add(run_id)
+
+    try:
+        # Synchronous hand-off placeholder: written here, before any thread
+        # is spawned, so GET .../status and GET .../events immediately after
+        # this response never see a 404 -- filesystem artifacts are the
+        # source of truth (Phase 2A already reads them that way).
+        append_run_event(
+            run_dir, RunEvent(event_type=EventType.RUN_QUEUED, run_id=run_id, created_at=created_at)
+        )
+        write_run_status(
+            run_dir,
+            RunStatus(
+                run_id=run_id,
+                analysis_status=AnalysisStatus.QUEUED,
+                review_status=ReviewStatus.NOT_REQUESTED,
+                overall_status=derive_overall_status(
+                    AnalysisStatus.QUEUED, ReviewStatus.NOT_REQUESTED
+                ),
+                agents={},
+                updated_at=created_at,
+            ),
+        )
+    except Exception:
+        with _IN_FLIGHT_LOCK:
+            _IN_FLIGHT_RUN_IDS.discard(run_id)
+        raise
+
+    thread = threading.Thread(
+        target=_execute_analysis_job, args=(run_id, request, runs_dir), daemon=True
+    )
+    thread.start()
+
+    return StartAnalysisResponse(run_id=run_id, analysis_status=AnalysisStatus.QUEUED)

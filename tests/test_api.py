@@ -5,6 +5,8 @@ Fixtures are built with the same run_contract/run_artifact_writer/reporting
 functions the real runners use, never hand-rolled JSON strings.
 """
 
+import threading
+import time
 from datetime import datetime, timezone
 
 import pytest
@@ -18,7 +20,7 @@ pytest.importorskip("fastapi.testclient")
 from fastapi import HTTPException  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
-from api.config import get_runs_dir  # noqa: E402
+from api.config import get_clock, get_runs_dir  # noqa: E402
 from api.main import _resolve_run_dir, app  # noqa: E402
 from tradingagents.report_field_parsing import extract_report_tree_fields  # noqa: E402
 from tradingagents.reporting import write_report_tree  # noqa: E402
@@ -37,6 +39,7 @@ from tradingagents.run_contract import (  # noqa: E402
     RunStatus,
     derive_overall_status,
 )
+from tradingagents.streaming_analysis_runner import StreamingDeepSeekAnalysisRunner  # noqa: E402
 
 CREATED_AT = datetime(2026, 7, 3, 12, 0, 0, tzinfo=timezone.utc)
 
@@ -132,9 +135,13 @@ def _build_status_only_run(run_dir, run_id=None, analysis_status=AnalysisStatus.
     return status
 
 
+POST_TIME = datetime(2026, 7, 3, 15, 0, 0, tzinfo=timezone.utc)
+
+
 @pytest.fixture
 def client(tmp_path):
     app.dependency_overrides[get_runs_dir] = lambda: tmp_path
+    app.dependency_overrides[get_clock] = lambda: (lambda: POST_TIME)
     yield TestClient(app)
     app.dependency_overrides.clear()
 
@@ -370,3 +377,225 @@ def test_run_id_percent_encoded_dot_dot_never_returns_200(client, tmp_path):
 def test_run_id_single_dot_rejected(client):
     resp = client.get("/api/runs/%2e/status")
     assert resp.status_code in (400, 404)
+
+
+# ---------------------------------------------------------------------------
+# POST /api/runs (Phase 2B) -- job worker. No real DeepSeek/TradingAgentsGraph
+# anywhere: `_build_graph` is monkeypatched in every test below.
+# ---------------------------------------------------------------------------
+
+
+class _TrivialFakeGraph:
+    """Enough to pass StreamingDeepSeekAnalysisRunner.__init__'s validation.
+    Used in tests that also monkeypatch .run() itself, so nothing beyond
+    .config is ever touched."""
+
+    config = {"llm_provider": "deepseek", "quick_think_llm": "x", "deep_think_llm": "y"}
+
+
+class _MinimalFakePropagator:
+    def create_initial_state(
+        self, company_name, trade_date, asset_type="stock", past_context="", instrument_context=""
+    ):
+        return {}
+
+    def get_graph_args(self, callbacks=None):
+        return {"stream_mode": "values", "config": {}}
+
+
+class _MinimalFakeMemoryLog:
+    def get_past_context(self, ticker):
+        return ""
+
+
+class _OneChunkCompiledGraph:
+    def stream(self, init_state, **kwargs):
+        yield {"market_report": "Market analysis text."}
+
+
+class _RaisingCompiledGraph:
+    def stream(self, init_state, **kwargs):
+        raise RuntimeError("boom")
+
+
+class _MinimalFakeGraph:
+    """A real (not mocked-out) StreamingDeepSeekAnalysisRunner.run() can
+    execute against this end to end -- used for the tests that need the
+    runner's *actual* collision-handling/failure-handling logic to run,
+    not just the API's own orchestration."""
+
+    def __init__(self, compiled_graph=None):
+        self.config = {"llm_provider": "deepseek", "quick_think_llm": "x", "deep_think_llm": "y"}
+        self.propagator = _MinimalFakePropagator()
+        self.memory_log = _MinimalFakeMemoryLog()
+        self.graph = compiled_graph or _OneChunkCompiledGraph()
+
+    def resolve_instrument_context(self, ticker, asset_type):
+        return ticker
+
+    def save_reports(self, final_state, ticker, save_path=None):
+        return write_report_tree(final_state, ticker, save_path)
+
+
+def _expected_run_id(ticker: str) -> str:
+    return f"{ticker}_{POST_TIME:%Y%m%d_%H%M%S}"
+
+
+@pytest.mark.unit
+def test_post_runs_does_not_block_and_immediate_gets_see_queued(client, monkeypatch):
+    started_event = threading.Event()
+    proceed_event = threading.Event()
+
+    def fake_run(self, ticker, analysis_date, *, asset_type="stock", run_id=None, allow_existing_queued_run=False):
+        started_event.set()
+        proceed_event.wait(timeout=2)
+
+    monkeypatch.setattr("api.main._build_graph", lambda request: _TrivialFakeGraph())
+    monkeypatch.setattr(StreamingDeepSeekAnalysisRunner, "run", fake_run)
+
+    t0 = time.monotonic()
+    resp = client.post("/api/runs", json={"ticker": "AAPL", "analysis_date": "2026-07-03"})
+    elapsed = time.monotonic() - t0
+
+    assert resp.status_code == 202
+    assert elapsed < 1.0, "POST waited for the background thread instead of returning immediately"
+    run_id = resp.json()["run_id"]
+    assert run_id == _expected_run_id("AAPL")
+    assert resp.json()["analysis_status"] == "queued"
+
+    # Requirement 1: immediate GET status must be 200 queued, never 404.
+    status_resp = client.get(f"/api/runs/{run_id}/status")
+    assert status_resp.status_code == 200
+    assert status_resp.json()["analysis_status"] == "queued"
+
+    # Requirement 2: immediate GET events must already have run_queued.
+    events_resp = client.get(f"/api/runs/{run_id}/events")
+    assert events_resp.status_code == 200
+    event_types = [e["event_type"] for e in events_resp.json()]
+    assert event_types[0] == "run_queued"
+
+    assert started_event.wait(timeout=2), "background thread never started"
+    proceed_event.set()  # release the thread so it doesn't leak past the test
+
+
+@pytest.mark.unit
+def test_post_runs_background_thread_takes_over_prewritten_queued_dir(client, monkeypatch):
+    # No .run() mock here -- the REAL StreamingDeepSeekAnalysisRunner.run()
+    # must take over the queued placeholder api/main.py already wrote,
+    # without raising FileExistsError.
+    monkeypatch.setattr("api.main._build_graph", lambda request: _MinimalFakeGraph())
+
+    resp = client.post("/api/runs", json={"ticker": "AAPL", "analysis_date": "2026-07-03"})
+    assert resp.status_code == 202
+    run_id = resp.json()["run_id"]
+
+    status = {}
+    for _ in range(50):
+        status = client.get(f"/api/runs/{run_id}/status").json()
+        if status["analysis_status"] in ("completed", "failed"):
+            break
+        time.sleep(0.02)
+
+    assert status["analysis_status"] == "completed"
+
+
+@pytest.mark.unit
+def test_post_runs_background_failure_still_returns_202_and_records_failed_status(
+    client, monkeypatch
+):
+    # No .run() mock -- let the real failure-handling inside run() itself
+    # write status=failed; the API layer must not reinvent that logic.
+    monkeypatch.setattr(
+        "api.main._build_graph",
+        lambda request: _MinimalFakeGraph(compiled_graph=_RaisingCompiledGraph()),
+    )
+
+    resp = client.post("/api/runs", json={"ticker": "AAPL", "analysis_date": "2026-07-03"})
+    assert resp.status_code == 202
+    run_id = resp.json()["run_id"]
+
+    status = {}
+    for _ in range(50):
+        status = client.get(f"/api/runs/{run_id}/status").json()
+        if status["analysis_status"] == "failed":
+            break
+        time.sleep(0.02)
+
+    assert status["analysis_status"] == "failed"
+    assert status["latest_error"] == "boom"
+
+    events = client.get(f"/api/runs/{run_id}/events").json()
+    assert events[-1]["event_type"] == "analysis_failed"
+    assert (
+        client.get(f"/api/runs/{run_id}/manifest").status_code != 200
+    ), "a failed run must not have a manifest"
+
+
+@pytest.mark.unit
+def test_post_runs_rejects_when_run_id_already_completed(client, tmp_path, monkeypatch):
+    build_graph_calls = []
+    monkeypatch.setattr(
+        "api.main._build_graph",
+        lambda request: (build_graph_calls.append(request), _TrivialFakeGraph())[1],
+    )
+
+    run_id = _expected_run_id("AAPL")
+    run_dir = tmp_path / run_id
+    _build_completed_run(run_dir, ticker="AAPL", run_id=run_id)
+    manifest_before = (run_dir / "analysis_manifest.json").read_text(encoding="utf-8")
+    status_before = (run_dir / "status.json").read_text(encoding="utf-8")
+
+    resp = client.post("/api/runs", json={"ticker": "AAPL", "analysis_date": "2026-07-03"})
+
+    assert resp.status_code == 409
+    assert build_graph_calls == []
+    assert (run_dir / "analysis_manifest.json").read_text(encoding="utf-8") == manifest_before
+    assert (run_dir / "status.json").read_text(encoding="utf-8") == status_before
+
+
+@pytest.mark.unit
+def test_post_runs_second_request_for_same_run_id_gets_409(client, monkeypatch):
+    proceed_event = threading.Event()
+
+    def fake_run(self, *args, **kwargs):
+        proceed_event.wait(timeout=2)
+
+    monkeypatch.setattr("api.main._build_graph", lambda request: _TrivialFakeGraph())
+    monkeypatch.setattr(StreamingDeepSeekAnalysisRunner, "run", fake_run)
+
+    resp1 = client.post("/api/runs", json={"ticker": "AAPL", "analysis_date": "2026-07-03"})
+    assert resp1.status_code == 202
+
+    resp2 = client.post("/api/runs", json={"ticker": "AAPL", "analysis_date": "2026-07-03"})
+    assert resp2.status_code == 409
+
+    proceed_event.set()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"ticker": "../../etc", "analysis_date": "2026-07-03"},
+        {"ticker": "AAPL", "analysis_date": "07/03/2026"},
+        {"ticker": "AAPL", "analysis_date": "2026-07-03", "selected_analysts": []},
+        {"ticker": "AAPL", "analysis_date": "2026-07-03", "selected_analysts": ["sentiment"]},
+    ],
+)
+def test_post_runs_rejects_invalid_request_before_dispatch(client, tmp_path, monkeypatch, payload):
+    build_calls = []
+    run_calls = []
+    monkeypatch.setattr(
+        "api.main._build_graph",
+        lambda request: (build_calls.append(request), _TrivialFakeGraph())[1],
+    )
+    monkeypatch.setattr(
+        StreamingDeepSeekAnalysisRunner, "run", lambda self, *a, **kw: run_calls.append(1)
+    )
+
+    resp = client.post("/api/runs", json=payload)
+
+    assert resp.status_code == 422
+    assert build_calls == []
+    assert run_calls == []
+    assert list(tmp_path.iterdir()) == []

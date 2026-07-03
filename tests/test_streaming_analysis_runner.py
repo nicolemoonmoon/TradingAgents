@@ -18,6 +18,7 @@ import pytest
 from pydantic import ValidationError
 
 from tradingagents.agents.schemas import PortfolioRating, TraderAction
+from tradingagents.run_artifact_writer import append_run_event, write_run_status
 from tradingagents.run_contract import (
     ANALYSIS_MANIFEST_FILENAME,
     EVENTS_FILENAME,
@@ -25,8 +26,12 @@ from tradingagents.run_contract import (
     AgentId,
     AgentStatus,
     AnalysisStatus,
+    EventType,
     OverallStatus,
+    ReviewStatus,
+    RunEvent,
     RunStatus,
+    derive_overall_status,
 )
 from tradingagents.streaming_analysis_runner import (
     DeepSeekAnalysisRunnerError,
@@ -416,3 +421,96 @@ def test_run_rejects_existing_run_dir(tmp_path):
 
     with pytest.raises(FileExistsError):
         runner.run("AAPL", "2026-07-03")
+
+
+# ---------------------------------------------------------------------------
+# Phase 2B: explicit run_id / queued-placeholder hand-off from an API layer
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_run_accepts_explicit_run_id(tmp_path):
+    graph = _FakeGraph(_config(), chunks=_default_chunks())
+    runner = StreamingDeepSeekAnalysisRunner(graph, runs_dir=tmp_path, clock=_fixed_clock)
+
+    manifest, status = runner.run("AAPL", "2026-07-03", run_id="CUSTOM_RUN_ID")
+
+    assert manifest.run_id == "CUSTOM_RUN_ID"
+    assert status.run_id == "CUSTOM_RUN_ID"
+    assert (tmp_path / "CUSTOM_RUN_ID").is_dir()
+
+
+def _write_queued_placeholder(run_dir, run_id):
+    review_status = ReviewStatus.NOT_REQUESTED
+    append_run_event(
+        run_dir, RunEvent(event_type=EventType.RUN_QUEUED, run_id=run_id, created_at=FIXED_TIME)
+    )
+    write_run_status(
+        run_dir,
+        RunStatus(
+            run_id=run_id,
+            analysis_status=AnalysisStatus.QUEUED,
+            review_status=review_status,
+            overall_status=derive_overall_status(AnalysisStatus.QUEUED, review_status),
+            agents={},
+            updated_at=FIXED_TIME,
+        ),
+    )
+
+
+@pytest.mark.unit
+def test_run_takes_over_existing_queued_placeholder_without_fileexistserror(tmp_path):
+    run_id = "AAPL_20260703_120000"
+    run_dir = tmp_path / run_id
+    _write_queued_placeholder(run_dir, run_id)
+
+    graph = _FakeGraph(_config(), chunks=_default_chunks())
+    runner = StreamingDeepSeekAnalysisRunner(graph, runs_dir=tmp_path, clock=_fixed_clock)
+
+    manifest, status = runner.run(
+        "AAPL", "2026-07-03", run_id=run_id, allow_existing_queued_run=True
+    )
+
+    assert manifest.run_id == run_id
+    assert status.analysis_status == AnalysisStatus.COMPLETED
+
+    lines = (run_dir / EVENTS_FILENAME).read_text(encoding="utf-8").splitlines()
+    event_types = [json.loads(line)["event_type"] for line in lines]
+    assert event_types.count("run_queued") == 1
+    assert event_types[0] == "run_queued"
+    assert event_types[1] == "analysis_started"
+
+
+@pytest.mark.unit
+def test_run_still_rejects_existing_completed_run_even_with_allow_flag(tmp_path):
+    run_id = "AAPL_20260703_120000"
+    graph = _FakeGraph(_config(), chunks=_default_chunks())
+    runner = StreamingDeepSeekAnalysisRunner(graph, runs_dir=tmp_path, clock=_fixed_clock)
+    runner.run("AAPL", "2026-07-03", run_id=run_id)  # completes normally, creates a real manifest
+
+    with pytest.raises(FileExistsError):
+        runner.run("AAPL", "2026-07-03", run_id=run_id, allow_existing_queued_run=True)
+
+
+@pytest.mark.unit
+def test_run_rejects_non_queued_placeholder_even_with_allow_flag(tmp_path):
+    run_id = "AAPL_20260703_120000"
+    run_dir = tmp_path / run_id
+    review_status = ReviewStatus.NOT_REQUESTED
+    write_run_status(
+        run_dir,
+        RunStatus(
+            run_id=run_id,
+            analysis_status=AnalysisStatus.RUNNING,
+            review_status=review_status,
+            overall_status=derive_overall_status(AnalysisStatus.RUNNING, review_status),
+            agents={},
+            updated_at=FIXED_TIME,
+        ),
+    )
+
+    graph = _FakeGraph(_config(), chunks=_default_chunks())
+    runner = StreamingDeepSeekAnalysisRunner(graph, runs_dir=tmp_path, clock=_fixed_clock)
+
+    with pytest.raises(FileExistsError):
+        runner.run("AAPL", "2026-07-03", run_id=run_id, allow_existing_queued_run=True)

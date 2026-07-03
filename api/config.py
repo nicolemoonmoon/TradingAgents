@@ -1,4 +1,4 @@
-"""Backend API configuration (Phase 2A).
+"""Backend API configuration (Phase 2A/2B).
 
 Deliberately separate from ``tradingagents/default_config.py``: that module
 configures the analysis pipeline (LLM provider/models/checkpointing); this
@@ -9,6 +9,8 @@ artifacts). The two are different concerns and don't share config state.
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
+from datetime import datetime, timezone
 from pathlib import Path
 
 from tradingagents.run_contract import RUNS_DIRNAME
@@ -23,3 +25,14 @@ def get_runs_dir() -> Path:
     tests rather than the environment variable.
     """
     return Path(os.getenv("TRADINGAGENTS_RUNS_DIR", RUNS_DIRNAME))
+
+
+def get_clock() -> Callable[[], datetime]:
+    """FastAPI dependency: the clock ``POST /api/runs`` uses to compute ``run_id``.
+
+    Defaults to the real wall clock. Tests override this via
+    ``app.dependency_overrides`` to get a deterministic, injectable time --
+    e.g. to make two requests compute the exact same ``run_id`` on purpose
+    (collision tests) without racing real ``datetime.now()`` calls.
+    """
+    return lambda: datetime.now(timezone.utc)

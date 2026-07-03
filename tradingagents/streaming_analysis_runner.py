@@ -45,6 +45,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
 
+from pydantic import ValidationError
+
 from tradingagents.dataflows.utils import safe_ticker_component
 from tradingagents.deepseek_analysis_runner import DeepSeekAnalysisRunnerError
 from tradingagents.report_field_parsing import extract_report_tree_fields
@@ -54,7 +56,9 @@ from tradingagents.run_artifact_writer import (
     write_run_status,
 )
 from tradingagents.run_contract import (
+    ANALYSIS_MANIFEST_FILENAME,
     RUNS_DIRNAME,
+    STATUS_FILENAME,
     AgentId,
     AgentStatus,
     AnalysisManifest,
@@ -94,6 +98,27 @@ class _StreamingGraphLike(Protocol):
 
 def _default_clock() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _is_resumable_queued_placeholder(run_dir: Path) -> bool:
+    """True iff ``run_dir`` holds only the minimal queued placeholder a
+    caller (e.g. ``api/main.py``'s ``POST /api/runs``) writes synchronously
+    before handing off to this runner -- ``status.json`` parses and says
+    ``queued``, and no ``analysis_manifest.json`` exists yet (which would
+    mean this is actually a real, already-completed historical run).
+    Anything else is NOT resumable and must be treated as a genuine
+    collision, never silently taken over.
+    """
+    if (run_dir / ANALYSIS_MANIFEST_FILENAME).exists():
+        return False
+    status_path = run_dir / STATUS_FILENAME
+    if not status_path.is_file():
+        return False
+    try:
+        status = RunStatus.model_validate_json(status_path.read_text(encoding="utf-8"))
+    except (ValidationError, OSError):
+        return False
+    return status.analysis_status is AnalysisStatus.QUEUED
 
 
 class StreamingDeepSeekAnalysisRunner:
@@ -156,25 +181,39 @@ class StreamingDeepSeekAnalysisRunner:
         return status
 
     def run(
-        self, ticker: str, analysis_date: str, *, asset_type: str = "stock"
+        self,
+        ticker: str,
+        analysis_date: str,
+        *,
+        asset_type: str = "stock",
+        run_id: str | None = None,
+        allow_existing_queued_run: bool = False,
     ) -> tuple[AnalysisManifest, RunStatus]:
         created_at = self._clock()
-        run_id = f"{safe_ticker_component(ticker)}_{created_at:%Y%m%d_%H%M%S}"
+        if run_id is None:
+            run_id = f"{safe_ticker_component(ticker)}_{created_at:%Y%m%d_%H%M%S}"
         run_dir = self.runs_dir / run_id
-        if run_dir.exists():
-            raise FileExistsError(
-                f"run_dir {run_dir} already exists; refusing to reuse it for a new run"
-            )
 
-        self._emit(
-            run_dir,
-            run_id,
-            EventType.RUN_QUEUED,
-            current_stage=_STAGE_QUEUED,
-            analysis_status=AnalysisStatus.QUEUED,
-            overall_status=OverallStatus.ANALYSIS_QUEUED,
-            agents={},
-        )
+        if run_dir.exists():
+            if not (allow_existing_queued_run and _is_resumable_queued_placeholder(run_dir)):
+                raise FileExistsError(
+                    f"run_dir {run_dir} already exists; refusing to reuse it for a new run"
+                )
+            # Valid hand-off from a caller-written queued placeholder (e.g.
+            # api/main.py's POST /api/runs, which writes this synchronously
+            # so a client polling status immediately after the response
+            # never sees a 404). Skip re-emitting run_queued -- the caller
+            # already did.
+        else:
+            self._emit(
+                run_dir,
+                run_id,
+                EventType.RUN_QUEUED,
+                current_stage=_STAGE_QUEUED,
+                analysis_status=AnalysisStatus.QUEUED,
+                overall_status=OverallStatus.ANALYSIS_QUEUED,
+                agents={},
+            )
         self._emit(
             run_dir,
             run_id,
