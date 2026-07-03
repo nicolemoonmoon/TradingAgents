@@ -140,6 +140,18 @@ def extract_report_tree_fields(run_dir: Path | str) -> ReportTreeFields:
             except ValueError:
                 flags.append("legacy_import:unparseable_draft_rating")
 
+        if draft_rating is None:
+            # The Portfolio Manager's report file exists (the agent ran),
+            # but no usable rating came out of it -- worth flagging even
+            # though the field itself correctly stays None rather than
+            # guessing. Distinguish "no **Rating**: label at all" (a strong
+            # signal the structured-output call fell back to free text --
+            # see agents/utils/structured.py) from a labeled-but-invalid
+            # value (already covered by the flag above).
+            flags.append("draft_rating_missing")
+            if extract_bold_field(decision_text, "Rating") is None:
+                flags.append("portfolio_decision_unstructured_or_unparseable")
+
     time_horizon = extract_bold_field(decision_text, "Time Horizon") if decision_text else None
 
     return ReportTreeFields(

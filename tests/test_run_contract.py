@@ -157,6 +157,22 @@ def test_event_type_includes_analysis_failed():
     assert "analysis_failed" in {e.value for e in EventType}
 
 
+@pytest.mark.unit
+def test_event_type_includes_stage_events():
+    # Phase 1B: coarse runner-level stage boundaries around propagate()/
+    # save_reports()/manifest construction, so events.jsonl isn't silent
+    # for the minutes-long propagate() call. Not agent-level events.
+    values = {e.value for e in EventType}
+    assert {
+        "graph_propagate_started",
+        "graph_propagate_completed",
+        "report_write_started",
+        "report_write_completed",
+        "manifest_write_started",
+        "manifest_write_completed",
+    } <= values
+
+
 # ---------------------------------------------------------------------------
 # derive_overall_status
 # ---------------------------------------------------------------------------

@@ -87,12 +87,14 @@ class _FakeGraph:
         raise_exc=None,
         on_propagate=None,
         raise_in_save_reports=None,
+        on_save_reports=None,
     ):
         self.config = config
         self._final_state = final_state
         self._raise_exc = raise_exc
         self._on_propagate = on_propagate
         self._raise_in_save_reports = raise_in_save_reports
+        self._on_save_reports = on_save_reports
         self.propagate_calls = []
         self.save_reports_calls = []
 
@@ -108,6 +110,8 @@ class _FakeGraph:
         from tradingagents.reporting import write_report_tree
 
         self.save_reports_calls.append((final_state, ticker, save_path))
+        if self._on_save_reports is not None:
+            self._on_save_reports()
         if self._raise_in_save_reports is not None:
             raise self._raise_in_save_reports
         return write_report_tree(final_state, ticker, save_path)
@@ -170,7 +174,7 @@ def test_run_success_writes_full_artifact_tree(tmp_path):
 
 
 @pytest.mark.unit
-def test_run_success_events_sequence_is_queued_started_completed(tmp_path):
+def test_run_success_events_sequence_is_full_nine_stages(tmp_path):
     graph = _FakeGraph(_config(), final_state=_final_state())
     runner = DeepSeekAnalysisRunner(graph, runs_dir=tmp_path, clock=_fixed_clock)
 
@@ -179,7 +183,17 @@ def test_run_success_events_sequence_is_queued_started_completed(tmp_path):
     run_dir = tmp_path / manifest.run_id
     lines = (run_dir / EVENTS_FILENAME).read_text(encoding="utf-8").splitlines()
     event_types = [json.loads(line)["event_type"] for line in lines]
-    assert event_types == ["run_queued", "analysis_started", "analysis_completed"]
+    assert event_types == [
+        "run_queued",
+        "analysis_started",
+        "graph_propagate_started",
+        "graph_propagate_completed",
+        "report_write_started",
+        "report_write_completed",
+        "manifest_write_started",
+        "manifest_write_completed",
+        "analysis_completed",
+    ]
 
 
 @pytest.mark.unit
@@ -222,7 +236,7 @@ def test_run_missing_optional_field_is_none_not_fabricated(tmp_path):
 
 
 @pytest.mark.unit
-def test_run_writes_running_status_before_blocking_propagate_call(tmp_path):
+def test_run_writes_graph_propagate_stage_before_blocking_call(tmp_path):
     captured = {}
 
     def _capture():
@@ -238,7 +252,59 @@ def test_run_writes_running_status_before_blocking_propagate_call(tmp_path):
 
     assert captured["status"].analysis_status == AnalysisStatus.RUNNING
     assert captured["status"].overall_status == OverallStatus.ANALYSIS_RUNNING
+    assert captured["status"].current_stage == "graph_propagate"
     assert captured["status"].agents == {}
+
+
+@pytest.mark.unit
+def test_run_writes_report_write_stage_before_save_reports_call(tmp_path):
+    captured = {}
+
+    def _capture():
+        run_dir = tmp_path / "AAPL_20260703_120000"
+        captured["status"] = RunStatus.model_validate_json(
+            (run_dir / STATUS_FILENAME).read_text(encoding="utf-8")
+        )
+
+    graph = _FakeGraph(_config(), final_state=_final_state(), on_save_reports=_capture)
+    runner = DeepSeekAnalysisRunner(graph, runs_dir=tmp_path, clock=_fixed_clock)
+
+    runner.run("AAPL", "2026-07-03")
+
+    assert captured["status"].analysis_status == AnalysisStatus.RUNNING
+    assert captured["status"].overall_status == OverallStatus.ANALYSIS_RUNNING
+    assert captured["status"].current_stage == "report_write"
+    assert captured["status"].agents == {}
+
+
+@pytest.mark.unit
+def test_run_final_status_current_stage_is_completed(tmp_path):
+    graph = _FakeGraph(_config(), final_state=_final_state())
+    runner = DeepSeekAnalysisRunner(graph, runs_dir=tmp_path, clock=_fixed_clock)
+
+    _manifest, status = runner.run("AAPL", "2026-07-03")
+
+    assert status.current_stage == "completed"
+
+
+@pytest.mark.unit
+def test_run_flags_draft_rating_missing_when_pm_output_is_unstructured_free_text(tmp_path):
+    # Reproduces the real Phase 1A smoke test observation (AAPL_20260703_022654):
+    # the Portfolio Manager's structured-output call fell back to free text
+    # with no "**Rating**:" label, so draft_rating stays None -- must be
+    # flagged now, not silently absent.
+    final_state = _final_state()
+    final_state["risk_debate_state"]["judge_decision"] = (
+        "好的，作为投资组合经理，我的最终决定是维持现有仓位不变。"
+    )
+    graph = _FakeGraph(_config(), final_state=final_state)
+    runner = DeepSeekAnalysisRunner(graph, runs_dir=tmp_path, clock=_fixed_clock)
+
+    manifest, _status = runner.run("AAPL", "2026-07-03")
+
+    assert manifest.draft_rating is None
+    assert "draft_rating_missing" in manifest.data_quality_flags
+    assert "portfolio_decision_unstructured_or_unparseable" in manifest.data_quality_flags
 
 
 # ---------------------------------------------------------------------------
@@ -258,6 +324,7 @@ def test_run_failure_records_status_failed_and_reraises(tmp_path):
     status = RunStatus.model_validate_json((run_dir / STATUS_FILENAME).read_text(encoding="utf-8"))
     assert status.analysis_status == AnalysisStatus.FAILED
     assert status.overall_status == OverallStatus.ANALYSIS_FAILED
+    assert status.current_stage == "failed"
     assert status.latest_error == "boom"
     assert not (run_dir / ANALYSIS_MANIFEST_FILENAME).exists()
 

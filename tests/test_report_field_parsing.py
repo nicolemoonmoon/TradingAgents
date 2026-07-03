@@ -64,6 +64,26 @@ def test_extract_report_tree_fields_reads_draft_rating_via_parse_rating(tmp_path
 
 
 @pytest.mark.unit
+def test_extract_report_tree_fields_flags_draft_rating_missing_when_no_rating_label(tmp_path):
+    # Reproduces the real Phase 1A smoke test observation: the Portfolio
+    # Manager's structured-output call fell back to free text with no
+    # "**Rating**:" label at all, so draft_rating stays None -- this must
+    # now be flagged, not silently absent.
+    run_dir = _copy_fixture(tmp_path)
+    decision_md = run_dir / "5_portfolio" / "decision.md"
+    decision_md.write_text(
+        "好的，作为投资组合经理，我的最终决定是维持现有仓位不变。",
+        encoding="utf-8",
+    )
+
+    fields = extract_report_tree_fields(run_dir)
+
+    assert fields.draft_rating is None
+    assert "draft_rating_missing" in fields.data_quality_flags
+    assert "portfolio_decision_unstructured_or_unparseable" in fields.data_quality_flags
+
+
+@pytest.mark.unit
 def test_extract_report_tree_fields_reads_time_horizon(tmp_path):
     run_dir = _copy_fixture(tmp_path)
     fields = extract_report_tree_fields(run_dir)

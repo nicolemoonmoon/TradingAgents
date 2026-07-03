@@ -112,6 +112,16 @@ class EventType(str, Enum):
     # single agent_failed -- without this, a run that fails before any
     # agent-level event fires has no closing event at all in events.jsonl.
     ANALYSIS_FAILED = "analysis_failed"
+    # Coarse runner-level stage boundaries (Phase 1B) around the
+    # DeepSeekAnalysisRunner's own call sites -- propagate()/save_reports()/
+    # manifest construction. Not agent-level: propagate() gives no
+    # per-agent visibility from outside (see deepseek_analysis_runner.py).
+    GRAPH_PROPAGATE_STARTED = "graph_propagate_started"
+    GRAPH_PROPAGATE_COMPLETED = "graph_propagate_completed"
+    REPORT_WRITE_STARTED = "report_write_started"
+    REPORT_WRITE_COMPLETED = "report_write_completed"
+    MANIFEST_WRITE_STARTED = "manifest_write_started"
+    MANIFEST_WRITE_COMPLETED = "manifest_write_completed"
 
 
 class OverallStatus(str, Enum):
