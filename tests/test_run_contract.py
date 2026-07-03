@@ -14,6 +14,7 @@ from tradingagents.run_contract import (
     AgentStatus,
     AnalysisManifest,
     AnalysisStatus,
+    EventType,
     OverallStatus,
     ReviewManifestStub,
     ReviewStatus,
@@ -145,6 +146,15 @@ def test_agent_status_enum_values():
 @pytest.mark.unit
 def test_agent_id_enum_matches_blueprint_selected_agents_example():
     assert {a.value for a in AgentId} == set(SELECTED_AGENTS)
+
+
+@pytest.mark.unit
+def test_event_type_includes_analysis_failed():
+    # A run-level failure (propagate() raising outright, not a single
+    # agent failing) needs its own terminal event distinct from
+    # agent_failed -- otherwise events.jsonl has no closing event at all
+    # for a run that failed before any agent-level event fired.
+    assert "analysis_failed" in {e.value for e in EventType}
 
 
 # ---------------------------------------------------------------------------
@@ -355,6 +365,27 @@ def test_run_event_agent_failed_requires_error_message():
             agent_id="sentiment",
             created_at=CREATED_AT,
         )
+
+
+@pytest.mark.unit
+def test_run_event_analysis_failed_requires_error_message():
+    with pytest.raises(ValidationError):
+        RunEvent(
+            event_type=EventType.ANALYSIS_FAILED,
+            run_id="AAPL_20260701_165131",
+            created_at=CREATED_AT,
+        )
+
+
+@pytest.mark.unit
+def test_run_event_analysis_failed_with_error_constructs_successfully():
+    event = RunEvent(
+        event_type=EventType.ANALYSIS_FAILED,
+        run_id="AAPL_20260701_165131",
+        created_at=CREATED_AT,
+        error="propagate() raised RuntimeError: boom",
+    )
+    assert event.event_type == EventType.ANALYSIS_FAILED
 
 
 @pytest.mark.unit

@@ -108,6 +108,10 @@ class EventType(str, Enum):
     AGENT_COMPLETED = "agent_completed"
     AGENT_FAILED = "agent_failed"
     ANALYSIS_COMPLETED = "analysis_completed"
+    # Run-level failure (e.g. propagate() raising outright), distinct from a
+    # single agent_failed -- without this, a run that fails before any
+    # agent-level event fires has no closing event at all in events.jsonl.
+    ANALYSIS_FAILED = "analysis_failed"
 
 
 class OverallStatus(str, Enum):
@@ -291,6 +295,8 @@ class RunEvent(BaseModel):
             raise ValueError(f"event_type={self.event_type.value!r} requires agent_id")
         if self.event_type is EventType.AGENT_FAILED and not self.error:
             raise ValueError("event_type='agent_failed' requires a non-empty error")
+        if self.event_type is EventType.ANALYSIS_FAILED and not self.error:
+            raise ValueError("event_type='analysis_failed' requires a non-empty error")
         return self
 
 

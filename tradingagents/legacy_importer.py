@@ -1,18 +1,21 @@
 """Legacy markdown-report importer (Phase 0B).
 
-LEGACY-ONLY: this module is the *only* place in the codebase that parses
-rendered markdown via regex to recover structured fields. New live runs
-(Phase 1A onward) must build ``AnalysisManifest``/``RunStatus`` directly
-from the graph's structured Pydantic outputs (``tradingagents.agents.schemas``),
-never by parsing markdown back out -- do not copy this module's approach
-into any live-run code path.
-
 Imports an EXISTING new-format report directory (the
 ``1_analysts/2_research/3_trading/4_risk/5_portfolio`` tree produced by
 ``tradingagents.reporting.write_report_tree``) and synthesizes
 ``analysis_manifest.json`` + ``status.json`` into that same directory.
 Never constructs the older flat ``reports/{TICKER}/{date}/reports/*.md``
 shape.
+
+The markdown-field extraction itself (``**Field**: value`` regex parsing)
+lives in ``tradingagents.report_field_parsing`` and is shared with the
+Phase 1A live runner (``deepseek_analysis_runner.py``) -- both read the same
+report-tree shape today, since the graph doesn't preserve structured
+Pydantic objects past rendering. This module's own, legacy-specific job is
+narrower: turning a ``{TICKER}_{YYYYMMDD}_{HHMMSS}`` directory name into
+run identity (ticker/analysis_date/created_at), which only makes sense for
+*historical* directories -- a live run already knows its own identity from
+the caller and never needs to reverse-engineer it from a directory name.
 
 Never fabricates a field it cannot find: unextractable fields are left
 ``None``, never guessed. All manifests produced here get
@@ -27,6 +30,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from tradingagents.agents.schemas import PortfolioRating, TraderAction
+from tradingagents.report_field_parsing import extract_report_tree_fields
 from tradingagents.run_artifact_writer import write_analysis_manifest, write_run_status
 from tradingagents.run_contract import (
     AgentId,
@@ -60,32 +64,7 @@ class LegacyExtraction:
     data_quality_flags: list[str] = field(default_factory=list)
 
 
-# The report tree's file-to-agent correspondence, per
-# tradingagents.reporting.write_report_tree / run_contract.REPORT_TREE.
-_AGENT_FILE_MAP: dict[tuple[str, str], AgentId] = {
-    ("1_analysts", "market.md"): AgentId.MARKET,
-    ("1_analysts", "fundamentals.md"): AgentId.FUNDAMENTALS,
-    ("1_analysts", "sentiment.md"): AgentId.SENTIMENT,
-    ("1_analysts", "news.md"): AgentId.NEWS,
-    ("2_research", "bull.md"): AgentId.BULL,
-    ("2_research", "bear.md"): AgentId.BEAR,
-    ("2_research", "manager.md"): AgentId.RESEARCH_MANAGER,
-    ("3_trading", "trader.md"): AgentId.TRADER,
-    ("4_risk", "aggressive.md"): AgentId.AGGRESSIVE_RISK,
-    ("4_risk", "neutral.md"): AgentId.NEUTRAL_RISK,
-    ("4_risk", "conservative.md"): AgentId.CONSERVATIVE_RISK,
-    ("5_portfolio", "decision.md"): AgentId.PORTFOLIO_MANAGER,
-}
-
 _DIRNAME_RE = re.compile(r"^(?P<ticker>[^_]+)_(?P<date>\d{8})_(?P<time>\d{6})$")
-
-
-def _extract_bold_field(text: str, field_name: str) -> str | None:
-    pattern = rf"^\*\*{re.escape(field_name)}\*\*:\s*(.+)$"
-    match = re.search(pattern, text, re.MULTILINE)
-    if match is None:
-        return None
-    return match.group(1).strip()
 
 
 def _parse_dirname(name: str) -> tuple[str, str, datetime]:
@@ -119,81 +98,23 @@ def extract_legacy_fields(run_dir: Path | str) -> LegacyExtraction:
         raise LegacyImportError(f"{run_dir} does not exist or is not a directory")
 
     ticker, analysis_date, created_at = _parse_dirname(run_dir.name)
+    fields = extract_report_tree_fields(run_dir)
 
-    agent_statuses: dict[AgentId, AgentStatus] = {}
-    texts: dict[AgentId, str] = {}
-    flags: list[str] = []
-
-    for (subdir, filename), agent_id in _AGENT_FILE_MAP.items():
-        path = run_dir / subdir / filename
-        if not path.exists():
-            agent_statuses[agent_id] = AgentStatus.NOT_SELECTED
-            continue
-        agent_statuses[agent_id] = AgentStatus.COMPLETED
-        try:
-            texts[agent_id] = path.read_text(encoding="utf-8")
-        except UnicodeDecodeError:
-            flags.append(f"legacy_import:unreadable_{agent_id.value}")
-
-    if not any(status is AgentStatus.COMPLETED for status in agent_statuses.values()):
+    if not any(status is AgentStatus.COMPLETED for status in fields.agent_statuses.values()):
         raise LegacyImportError(f"no report files found under {run_dir}; nothing to import")
-
-    trader_text = texts.get(AgentId.TRADER)
-    manager_text = texts.get(AgentId.RESEARCH_MANAGER)
-    decision_text = texts.get(AgentId.PORTFOLIO_MANAGER)
-
-    trader_action: TraderAction | None = None
-    if trader_text is not None:
-        raw = _extract_bold_field(trader_text, "Action")
-        if raw is not None:
-            try:
-                trader_action = TraderAction(raw)
-            except ValueError:
-                flags.append("legacy_import:unparseable_trader_action")
-
-    stop_loss: float | None = None
-    if trader_text is not None:
-        raw = _extract_bold_field(trader_text, "Stop Loss")
-        if raw is not None:
-            try:
-                stop_loss = float(raw)
-            except ValueError:
-                flags.append("legacy_import:unparseable_stop_loss")
-
-    position_sizing = _extract_bold_field(trader_text, "Position Sizing") if trader_text else None
-
-    research_manager_recommendation: PortfolioRating | None = None
-    if manager_text is not None:
-        raw = _extract_bold_field(manager_text, "Recommendation")
-        if raw is not None:
-            try:
-                research_manager_recommendation = PortfolioRating(raw)
-            except ValueError:
-                flags.append("legacy_import:unparseable_research_manager_recommendation")
-
-    draft_rating: PortfolioRating | None = None
-    if decision_text is not None:
-        raw = _extract_bold_field(decision_text, "Rating")
-        if raw is not None:
-            try:
-                draft_rating = PortfolioRating(raw)
-            except ValueError:
-                flags.append("legacy_import:unparseable_draft_rating")
-
-    time_horizon = _extract_bold_field(decision_text, "Time Horizon") if decision_text else None
 
     return LegacyExtraction(
         ticker=ticker,
         analysis_date=analysis_date,
         created_at=created_at,
-        draft_rating=draft_rating,
-        trader_action=trader_action,
-        research_manager_recommendation=research_manager_recommendation,
-        stop_loss=stop_loss,
-        position_sizing=position_sizing,
-        time_horizon=time_horizon,
-        agent_statuses=agent_statuses,
-        data_quality_flags=flags,
+        draft_rating=fields.draft_rating,
+        trader_action=fields.trader_action,
+        research_manager_recommendation=fields.research_manager_recommendation,
+        stop_loss=fields.stop_loss,
+        position_sizing=fields.position_sizing,
+        time_horizon=fields.time_horizon,
+        agent_statuses=fields.agent_statuses,
+        data_quality_flags=fields.data_quality_flags,
     )
 
 
