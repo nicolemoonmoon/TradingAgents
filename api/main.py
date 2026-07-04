@@ -1,5 +1,6 @@
-"""Backend API for run artifacts: read-only browsing (Phase 2A) plus a
-minimal job worker to start new analyses (Phase 2B).
+"""Backend API for run artifacts: read-only browsing (Phase 2A), a minimal
+job worker to start new analyses (Phase 2B), and a minimal static Web UI
+(Phase 2C).
 
 Read endpoints only read files already written by
 ``tradingagents.deepseek_analysis_runner``/``tradingagents.streaming_analysis_runner``/
@@ -29,8 +30,15 @@ analysis completion" untestable). Duplicate ``run_id``s (same ticker,
 same wall-clock second, or a genuine pre-existing run) are rejected with
 ``409`` before anything is written.
 
-Run with: ``uvicorn api.main:app --reload`` (requires the ``api`` extra:
-``pip install -e ".[api]"``).
+The static Web UI (``api/static/index.html``/``app.js``/``style.css``) is
+mounted via ``StaticFiles`` at the very end of this module, after every
+``/api/...`` route is registered -- Starlette matches routes in registration
+order, so this ordering is what keeps the catch-all static mount from
+shadowing the API routes. This is an internal tool with no authentication:
+run it bound to ``127.0.0.1`` only, never ``0.0.0.0``.
+
+Run with: ``uvicorn api.main:app --reload --host 127.0.0.1`` (requires the
+``api`` extra: ``pip install -e ".[api]"``).
 """
 
 from __future__ import annotations
@@ -44,6 +52,7 @@ from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import PlainTextResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 
 from api.config import get_clock, get_runs_dir
@@ -290,3 +299,12 @@ def start_analysis(
     thread.start()
 
     return StartAnalysisResponse(run_id=run_id, analysis_status=AnalysisStatus.QUEUED)
+
+
+# Mounted last, after every /api/... route above, so this catch-all can never
+# shadow them (Starlette matches routes in registration order).
+app.mount(
+    "/",
+    StaticFiles(directory=Path(__file__).parent / "static", html=True),
+    name="ui",
+)

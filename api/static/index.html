@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>TradingAgents Research Workbench</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header>
+    <h1>TradingAgents Research Workbench</h1>
+    <p class="disclaimer">
+      Internal research tool -- draft analysis and risk-review notes only.
+      Not a trading system: no brokerage connection, no order execution.
+    </p>
+  </header>
+
+  <main>
+    <section id="mode-switch">
+      <label>
+        <input type="radio" name="mode" id="mode-new" value="new" checked />
+        Start new analysis
+      </label>
+      <label>
+        <input type="radio" name="mode" id="mode-load" value="load" />
+        Load existing run
+      </label>
+    </section>
+
+    <section id="new-run-form">
+      <div class="field">
+        <label for="ticker-input">Ticker</label>
+        <input type="text" id="ticker-input" value="AAPL" />
+      </div>
+      <div class="field">
+        <label for="analysis-date-input">Analysis date</label>
+        <input type="date" id="analysis-date-input" />
+      </div>
+      <fieldset class="field">
+        <legend>Analysts</legend>
+        <label><input type="checkbox" class="analyst-checkbox" value="market" checked /> market</label>
+        <label><input type="checkbox" class="analyst-checkbox" value="social" /> social</label>
+        <label><input type="checkbox" class="analyst-checkbox" value="news" /> news</label>
+        <label><input type="checkbox" class="analyst-checkbox" value="fundamentals" /> fundamentals</label>
+      </fieldset>
+      <div class="field">
+        <label for="quick-model-input">Quick model</label>
+        <input type="text" id="quick-model-input" value="deepseek-v4-flash" />
+      </div>
+      <div class="field">
+        <label for="deep-model-input">Deep model</label>
+        <input type="text" id="deep-model-input" value="deepseek-v4-flash" />
+      </div>
+      <button id="start-button" type="button">Start analysis</button>
+      <button id="reset-button" type="button" hidden>Start new analysis</button>
+    </section>
+
+    <section id="load-run-form" hidden>
+      <div class="field">
+        <label for="run-id-input">Run ID</label>
+        <input type="text" id="run-id-input" placeholder="AAPL_20260703_070744" />
+      </div>
+      <button id="load-run-button" type="button">Load</button>
+    </section>
+
+    <p id="error-message" class="error" hidden></p>
+
+    <section id="run-view" hidden>
+      <h2>Run: <span id="run-id-label"></span> -- status: <span id="status-label"></span></h2>
+
+      <div class="run-columns">
+        <div class="run-column">
+          <h3>Event timeline</h3>
+          <ul id="event-timeline"></ul>
+        </div>
+        <div class="run-column">
+          <h3>Agents</h3>
+          <ul id="agent-list"></ul>
+        </div>
+      </div>
+
+      <div id="final-decision" hidden>
+        <h3>Final decision</h3>
+        <p>Trader action: <span id="trader-action-label"></span></p>
+        <p>Draft rating: <span id="draft-rating-label"></span></p>
+        <p>Data quality flags: <span id="data-quality-flags-label"></span></p>
+        <p><a id="report-link" href="#" target="_blank" rel="noopener">View complete report</a></p>
+      </div>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>
