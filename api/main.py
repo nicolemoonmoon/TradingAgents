@@ -26,9 +26,15 @@ request, synchronously writes a minimal ``queued`` placeholder
 module docstring in ``tradingagents/streaming_analysis_runner.py`` history/
 the Phase 2B plan for why: ``TestClient`` waits for ``BackgroundTasks`` to
 finish before returning, which makes "the response doesn't block on
-analysis completion" untestable). Duplicate ``run_id``s (same ticker,
-same wall-clock second, or a genuine pre-existing run) are rejected with
-``409`` before anything is written.
+analysis completion" untestable). A genuine pre-existing run directory is
+rejected with ``409`` before anything is written.
+
+Phase 2E cost/safety guardrail: at most one analysis may be active (queued
+or running) per server process at a time, regardless of ticker -- a second
+``POST /api/runs`` while one is active gets ``409`` with the current
+``active_run_id`` in the body, not just a same-``run_id`` collision check.
+This deliberately trades away same-process concurrency for a hard limit on
+how many real, billable LLM calls can be in flight at once.
 
 The static Web UI (``api/static/index.html``/``app.js``/``style.css``) is
 mounted via ``StaticFiles`` at the very end of this module, after every
@@ -86,11 +92,13 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="TradingAgents Run Artifacts API", version="0.1.0")
 
-# In-process claim set guarding against two concurrent POSTs computing the
-# same run_id (same ticker, same wall-clock second). Does NOT protect
-# against multi-process/multi-replica deployments -- see the Phase 2B plan.
-_IN_FLIGHT_RUN_IDS: set[str] = set()
-_IN_FLIGHT_LOCK = threading.Lock()
+# Single-slot guard (Phase 2E): at most one analysis may be active (queued or
+# running) per server process at a time -- a cost/safety guardrail, not just
+# a same-run_id collision check like Phase 2B's original per-run_id set. Any
+# second POST while this slot is occupied gets 409 regardless of ticker. Does
+# NOT protect against multi-process/multi-replica deployments.
+_ACTIVE_RUN_LOCK = threading.Lock()
+_ACTIVE_RUN_ID: str | None = None
 
 # section -> (subdir, filename), built from REPORT_TREE so it can never drift
 # from the actual on-disk layout. "complete_report" is the one entry outside
@@ -231,7 +239,8 @@ def _build_graph(request: StartAnalysisRequest) -> TradingAgentsGraph:
 def _execute_analysis_job(run_id: str, request: StartAnalysisRequest, runs_dir: Path) -> None:
     """Background thread target. ``StreamingDeepSeekAnalysisRunner.run()`` already
     records failure to status.json/events.jsonl and re-raises -- this wrapper
-    just logs it (so it isn't silently lost) and always releases the claim."""
+    just logs it (so it isn't silently lost) and always releases the active-run slot."""
+    global _ACTIVE_RUN_ID
     try:
         graph = _build_graph(request)
         runner = StreamingDeepSeekAnalysisRunner(graph, runs_dir=runs_dir)
@@ -245,8 +254,9 @@ def _execute_analysis_job(run_id: str, request: StartAnalysisRequest, runs_dir: 
     except Exception:
         logger.exception("background analysis job %r failed", run_id)
     finally:
-        with _IN_FLIGHT_LOCK:
-            _IN_FLIGHT_RUN_IDS.discard(run_id)
+        with _ACTIVE_RUN_LOCK:
+            if run_id == _ACTIVE_RUN_ID:
+                _ACTIVE_RUN_ID = None
 
 
 @app.post("/api/runs", status_code=202, response_model=StartAnalysisResponse)
@@ -255,23 +265,39 @@ def start_analysis(
     runs_dir: Path = Depends(get_runs_dir),
     clock: Callable[[], datetime] = Depends(get_clock),
 ) -> StartAnalysisResponse:
+    global _ACTIVE_RUN_ID
     created_at = clock()
     run_id = f"{safe_ticker_component(request.ticker)}_{created_at:%Y%m%d_%H%M%S}"
     run_dir = runs_dir / run_id
 
-    with _IN_FLIGHT_LOCK:
-        if run_id in _IN_FLIGHT_RUN_IDS or run_dir.exists():
+    with _ACTIVE_RUN_LOCK:
+        if _ACTIVE_RUN_ID is not None:
             raise HTTPException(
                 status_code=409,
-                detail=f"run {run_id!r} already exists or is in progress; retry in a moment",
+                detail={
+                    "error": "active_run_exists",
+                    "message": (
+                        "Another analysis is already running. Only one active "
+                        "analysis is allowed per server process."
+                    ),
+                    "active_run_id": _ACTIVE_RUN_ID,
+                },
             )
-        _IN_FLIGHT_RUN_IDS.add(run_id)
+        if run_dir.exists():
+            raise HTTPException(
+                status_code=409,
+                detail=f"run {run_id!r} already exists; refusing to reuse it for a new run",
+            )
+        _ACTIVE_RUN_ID = run_id
 
     try:
         # Synchronous hand-off placeholder: written here, before any thread
         # is spawned, so GET .../status and GET .../events immediately after
         # this response never see a 404 -- filesystem artifacts are the
-        # source of truth (Phase 2A already reads them that way).
+        # source of truth (Phase 2A already reads them that way). Starting
+        # the background thread is inside this try too: a failure at any of
+        # these three steps must release the active-run slot, not just a
+        # failure writing the placeholder.
         append_run_event(
             run_dir, RunEvent(event_type=EventType.RUN_QUEUED, run_id=run_id, created_at=created_at)
         )
@@ -288,15 +314,14 @@ def start_analysis(
                 updated_at=created_at,
             ),
         )
+        thread = threading.Thread(
+            target=_execute_analysis_job, args=(run_id, request, runs_dir), daemon=True
+        )
+        thread.start()
     except Exception:
-        with _IN_FLIGHT_LOCK:
-            _IN_FLIGHT_RUN_IDS.discard(run_id)
+        with _ACTIVE_RUN_LOCK:
+            _ACTIVE_RUN_ID = None
         raise
-
-    thread = threading.Thread(
-        target=_execute_analysis_job, args=(run_id, request, runs_dir), daemon=True
-    )
-    thread.start()
 
     return StartAnalysisResponse(run_id=run_id, analysis_status=AnalysisStatus.QUEUED)
 

@@ -599,3 +599,68 @@ def test_post_runs_rejects_invalid_request_before_dispatch(client, tmp_path, mon
     assert build_calls == []
     assert run_calls == []
     assert list(tmp_path.iterdir()) == []
+
+
+# ---------------------------------------------------------------------------
+# Phase 2E: single active-run guardrail -- at most one analysis running per
+# process, regardless of ticker.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_post_runs_rejects_second_request_for_different_ticker_while_one_is_active(
+    client, monkeypatch
+):
+    proceed_event = threading.Event()
+    finished_event = threading.Event()
+
+    def fake_run(self, *args, **kwargs):
+        proceed_event.wait(timeout=2)
+        finished_event.set()
+
+    monkeypatch.setattr("api.main._build_graph", lambda request: _TrivialFakeGraph())
+    monkeypatch.setattr(StreamingDeepSeekAnalysisRunner, "run", fake_run)
+
+    resp1 = client.post("/api/runs", json={"ticker": "AAPL", "analysis_date": "2026-07-03"})
+    assert resp1.status_code == 202
+
+    resp2 = client.post("/api/runs", json={"ticker": "MSFT", "analysis_date": "2026-07-03"})
+    assert resp2.status_code == 409
+
+    proceed_event.set()
+    assert finished_event.wait(timeout=2)
+
+    # _execute_analysis_job's finally block releases the slot on the
+    # background thread right after fake_run returns; poll briefly rather
+    # than assume it has already happened by the time we get here.
+    resp3 = None
+    for _ in range(50):
+        resp3 = client.post("/api/runs", json={"ticker": "GOOG", "analysis_date": "2026-07-03"})
+        if resp3.status_code == 202:
+            break
+        time.sleep(0.02)
+    assert resp3.status_code == 202
+
+
+@pytest.mark.unit
+def test_post_runs_409_active_run_response_includes_active_run_id(client, monkeypatch):
+    proceed_event = threading.Event()
+
+    def fake_run(self, *args, **kwargs):
+        proceed_event.wait(timeout=2)
+
+    monkeypatch.setattr("api.main._build_graph", lambda request: _TrivialFakeGraph())
+    monkeypatch.setattr(StreamingDeepSeekAnalysisRunner, "run", fake_run)
+
+    resp1 = client.post("/api/runs", json={"ticker": "AAPL", "analysis_date": "2026-07-03"})
+    assert resp1.status_code == 202
+    active_run_id = resp1.json()["run_id"]
+
+    resp2 = client.post("/api/runs", json={"ticker": "MSFT", "analysis_date": "2026-07-03"})
+    assert resp2.status_code == 409
+    detail = resp2.json()["detail"]
+    assert detail["error"] == "active_run_exists"
+    assert detail["active_run_id"] == active_run_id
+    assert "Only one active analysis is allowed per server process" in detail["message"]
+
+    proceed_event.set()

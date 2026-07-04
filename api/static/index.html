@@ -12,6 +12,9 @@
     <p class="disclaimer">
       Internal research tool -- draft analysis and risk-review notes only.
       Not a trading system: no brokerage connection, no order execution.
+      This tool triggers real LLM API calls and may incur real cost.
+      Output is research-only analysis, not trading advice, and this
+      system never places or automates any order.
     </p>
   </header>
 
@@ -42,6 +45,10 @@
         <label><input type="checkbox" class="analyst-checkbox" value="social" /> social</label>
         <label><input type="checkbox" class="analyst-checkbox" value="news" /> news</label>
         <label><input type="checkbox" class="analyst-checkbox" value="fundamentals" /> fundamentals</label>
+        <p class="cost-hint" id="analysts-cost-hint">
+          Default (market only) is the low-cost option. Selecting more
+          analysts increases both cost and run time.
+        </p>
       </fieldset>
       <div class="field">
         <label for="quick-model-input">Quick model</label>
@@ -88,6 +95,14 @@
       </div>
     </section>
   </main>
+
+  <footer>
+    <p class="bind-note" id="bind-localhost-note">
+      Run this server bound to 127.0.0.1 only. Do not bind 0.0.0.0 -- this
+      tool has no authentication and anyone reaching the port can trigger a
+      real, billable analysis.
+    </p>
+  </footer>
 
   <script src="/app.js"></script>
 </body>

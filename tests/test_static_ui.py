@@ -68,3 +68,35 @@ def test_api_routes_still_work_after_static_mount(client):
 
     resp = client.get("/api/runs/DOES_NOT_EXIST/status")
     assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Phase 2E: MVP guardrail copy -- risk/cost disclaimer, cost-tier hint,
+# localhost-binding note. Content-substring checks only, not exact wording.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_index_html_has_risk_disclaimer(client):
+    body = client.get("/").text
+    assert "real LLM API calls" in body
+    assert "real cost" in body
+    assert "research-only analysis" in body
+    assert "not trading advice" in body
+    assert "never places or automates any order" in body
+
+
+@pytest.mark.unit
+def test_index_html_has_cost_tier_hint(client):
+    body = client.get("/").text
+    assert 'id="analysts-cost-hint"' in body
+    assert "low-cost option" in body
+    assert "increases both cost and run time" in body
+
+
+@pytest.mark.unit
+def test_index_html_has_localhost_bind_note(client):
+    body = client.get("/").text
+    assert 'id="bind-localhost-note"' in body
+    assert "127.0.0.1" in body
+    assert "0.0.0.0" in body

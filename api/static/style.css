@@ -49,6 +49,34 @@ fieldset.field label {
   margin-right: 1rem;
 }
 
+.cost-hint {
+  font-size: 0.8rem;
+  color: #555;
+  margin: 0.5rem 0 0;
+}
+
+.bind-note {
+  font-size: 0.75rem;
+  color: #777;
+}
+
+#status-label {
+  font-weight: 600;
+}
+
+#status-label.status-queued,
+#status-label.status-running {
+  color: #1565c0;
+}
+
+#status-label.status-completed {
+  color: #2e7d32;
+}
+
+#status-label.status-failed {
+  color: #b00020;
+}
+
 button {
   padding: 0.5rem 1rem;
   font-size: 1rem;

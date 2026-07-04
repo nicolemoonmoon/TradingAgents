@@ -3,6 +3,7 @@
 
   const POLL_INTERVAL_MS = 2000;
   const TERMINAL_STATUSES = new Set(["completed", "failed"]);
+  const STATUS_CLASSES = ["status-queued", "status-running", "status-completed", "status-failed"];
 
   const el = (id) => document.getElementById(id);
 
@@ -71,6 +72,12 @@
     }
   }
 
+  function setStatusLabel(analysisStatus) {
+    statusLabel.textContent = analysisStatus;
+    statusLabel.classList.remove(...STATUS_CLASSES);
+    statusLabel.classList.add(`status-${analysisStatus}`);
+  }
+
   function renderFinalDecision(runId, manifest) {
     traderActionLabel.textContent = manifest.trader_action ?? "(none)";
     draftRatingLabel.textContent = manifest.draft_rating ?? "(none)";
@@ -100,7 +107,7 @@
     clearError();
     runView.hidden = false;
     runIdLabel.textContent = runId;
-    statusLabel.textContent = status.analysis_status;
+    setStatusLabel(status.analysis_status);
     renderAgents(status.agents);
 
     const { body: events } = await fetchJson(`/api/runs/${encodeURIComponent(runId)}/events`);
