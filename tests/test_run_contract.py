@@ -64,6 +64,11 @@ def _manifest_dict(**overrides):
         "data_quality_assessment": "not_available",
         "data_quality_flags": [],
         "disclaimer_version": "research-only-v1",
+        "strategy_profile": None,
+        "knowledge_version": None,
+        "matched_rules": [],
+        "strategy_score": None,
+        "knowledge_context_ids": [],
     }
     base.update(overrides)
     return base
@@ -81,6 +86,7 @@ def _status_dict(**overrides):
         "agents": dict.fromkeys(SELECTED_AGENTS, "completed"),
         "latest_error": None,
         "updated_at": CREATED_AT,
+        "strategy_profile": None,
     }
     base.update(overrides)
     return base
@@ -477,3 +483,79 @@ def test_run_event_rejects_unknown_extra_fields():
             created_at=CREATED_AT,
             some_made_up_field="x",
         )
+
+
+# ---------------------------------------------------------------------------
+# Phase 2F: strategy/knowledge-base placeholder fields -- pure passthrough,
+# never computed or consulted by anything. Defaults must be None/[] so every
+# existing manifest/status (including Phase 0B legacy imports, none of which
+# know about these fields) round-trips unchanged.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_analysis_manifest_strategy_fields_default_to_none_and_empty():
+    manifest = AnalysisManifest(
+        run_id="AAPL_20260701_165131",
+        ticker="AAPL",
+        analysis_date="2026-07-01",
+        created_at=CREATED_AT,
+        analysis_status=AnalysisStatus.QUEUED,
+        analysis_provider="deepseek",
+        quick_model="deepseek-v4-flash",
+        deep_model="deepseek-v4-pro",
+    )
+    assert manifest.strategy_profile is None
+    assert manifest.knowledge_version is None
+    assert manifest.matched_rules == []
+    assert manifest.strategy_score is None
+    assert manifest.knowledge_context_ids == []
+
+
+@pytest.mark.unit
+def test_run_status_strategy_profile_defaults_to_none():
+    status = RunStatus(**{k: v for k, v in _status_dict().items() if k != "strategy_profile"})
+    assert status.strategy_profile is None
+
+
+@pytest.mark.unit
+def test_legacy_manifest_json_without_strategy_fields_still_parses():
+    # Simulates a Phase 0B-imported (or any pre-Phase-2F) manifest on disk
+    # that has never heard of these 5 keys -- it must still parse, with the
+    # new fields falling back to their defaults, not raise.
+    payload = _manifest_dict()
+    for key in (
+        "strategy_profile",
+        "knowledge_version",
+        "matched_rules",
+        "strategy_score",
+        "knowledge_context_ids",
+    ):
+        del payload[key]
+    import json
+
+    manifest = AnalysisManifest.model_validate_json(json.dumps(payload))
+    assert manifest.strategy_profile is None
+    assert manifest.knowledge_version is None
+    assert manifest.matched_rules == []
+    assert manifest.strategy_score is None
+    assert manifest.knowledge_context_ids == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("bad_value", ["has space", "a!b", "", "x" * 65])
+def test_analysis_manifest_rejects_invalid_strategy_profile(bad_value):
+    with pytest.raises(ValidationError):
+        AnalysisManifest(**_manifest_dict(strategy_profile=bad_value))
+
+
+@pytest.mark.unit
+def test_run_status_rejects_invalid_strategy_profile():
+    with pytest.raises(ValidationError):
+        RunStatus(**_status_dict(strategy_profile="bad profile!"))
+
+
+@pytest.mark.unit
+def test_analysis_manifest_accepts_valid_strategy_profile():
+    manifest = AnalysisManifest(**_manifest_dict(strategy_profile="pradeep_v1"))
+    assert manifest.strategy_profile == "pradeep_v1"

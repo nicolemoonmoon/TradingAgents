@@ -19,6 +19,7 @@
   const runView = el("run-view");
   const runIdLabel = el("run-id-label");
   const statusLabel = el("status-label");
+  const strategyProfileLabel = el("strategy-profile-label");
   const eventTimeline = el("event-timeline");
   const agentList = el("agent-list");
   const finalDecision = el("final-decision");
@@ -108,6 +109,7 @@
     runView.hidden = false;
     runIdLabel.textContent = runId;
     setStatusLabel(status.analysis_status);
+    strategyProfileLabel.textContent = status.strategy_profile ?? "(none)";
     renderAgents(status.agents);
 
     const { body: events } = await fetchJson(`/api/runs/${encodeURIComponent(runId)}/events`);
@@ -146,12 +148,14 @@
     clearError();
     startButton.disabled = true;
     try {
+      const strategyProfileValue = el("strategy-profile-input").value.trim();
       const payload = {
         ticker: el("ticker-input").value.trim(),
         analysis_date: el("analysis-date-input").value,
         selected_analysts: collectSelectedAnalysts(),
         quick_model: el("quick-model-input").value.trim(),
         deep_model: el("deep-model-input").value.trim(),
+        strategy_profile: strategyProfileValue === "" ? null : strategyProfileValue,
       };
       const resp = await fetch("/api/runs", {
         method: "POST",

@@ -514,3 +514,83 @@ def test_run_rejects_non_queued_placeholder_even_with_allow_flag(tmp_path):
 
     with pytest.raises(FileExistsError):
         runner.run("AAPL", "2026-07-03", run_id=run_id, allow_existing_queued_run=True)
+
+
+# ---------------------------------------------------------------------------
+# Phase 2F: strategy_profile is pure passthrough -- never read, never
+# affects graph config/selected_analysts/analysis flow, only threaded into
+# every status write and the final manifest.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_run_threads_strategy_profile_into_final_manifest_and_status(tmp_path):
+    graph = _FakeGraph(_config(), chunks=_default_chunks())
+    runner = StreamingDeepSeekAnalysisRunner(graph, runs_dir=tmp_path, clock=_fixed_clock)
+
+    manifest, status = runner.run("AAPL", "2026-07-03", strategy_profile="pradeep_v1")
+
+    assert manifest.strategy_profile == "pradeep_v1"
+    assert status.strategy_profile == "pradeep_v1"
+
+
+@pytest.mark.unit
+def test_run_threads_strategy_profile_into_intermediate_status_writes(tmp_path, monkeypatch):
+    # Not just the final write -- status.json must carry strategy_profile
+    # throughout the run, including writes long before it finishes (e.g. the
+    # one triggered by the first agent_completed event).
+    captured_statuses = []
+    original_write_run_status = write_run_status
+
+    def _capture(run_dir_arg, status_arg, **kwargs):
+        captured_statuses.append(status_arg)
+        return original_write_run_status(run_dir_arg, status_arg, **kwargs)
+
+    monkeypatch.setattr(
+        "tradingagents.streaming_analysis_runner.write_run_status", _capture
+    )
+
+    graph = _FakeGraph(_config(), chunks=_default_chunks())
+    runner = StreamingDeepSeekAnalysisRunner(graph, runs_dir=tmp_path, clock=_fixed_clock)
+    runner.run("AAPL", "2026-07-03", strategy_profile="pradeep_v1")
+
+    assert len(captured_statuses) > 2
+    # Every write in between (not just the first and last) must carry it.
+    for intermediate_status in captured_statuses[1:-1]:
+        assert intermediate_status.strategy_profile == "pradeep_v1"
+
+
+@pytest.mark.unit
+def test_run_without_strategy_profile_keeps_it_none_throughout(tmp_path):
+    graph = _FakeGraph(_config(), chunks=_default_chunks())
+    runner = StreamingDeepSeekAnalysisRunner(graph, runs_dir=tmp_path, clock=_fixed_clock)
+
+    manifest, status = runner.run("AAPL", "2026-07-03")
+
+    assert manifest.strategy_profile is None
+    assert status.strategy_profile is None
+
+
+@pytest.mark.unit
+def test_run_strategy_profile_does_not_affect_selected_agents_or_config():
+    # Passthrough only: the same ticker/date/chunks with vs. without a
+    # strategy_profile must produce byte-identical selected_agents and
+    # graph config usage -- nothing about analysis flow changes.
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as d1, tempfile.TemporaryDirectory() as d2:
+        graph1 = _FakeGraph(_config(), chunks=_default_chunks())
+        runner1 = StreamingDeepSeekAnalysisRunner(graph1, runs_dir=Path(d1), clock=_fixed_clock)
+        manifest1, _ = runner1.run("AAPL", "2026-07-03")
+
+        graph2 = _FakeGraph(_config(), chunks=_default_chunks())
+        runner2 = StreamingDeepSeekAnalysisRunner(graph2, runs_dir=Path(d2), clock=_fixed_clock)
+        manifest2, _ = runner2.run("AAPL", "2026-07-03", strategy_profile="pradeep_v1")
+
+        assert manifest1.selected_agents == manifest2.selected_agents
+        assert manifest1.analysis_provider == manifest2.analysis_provider
+        assert manifest1.quick_model == manifest2.quick_model
+        assert manifest1.deep_model == manifest2.deep_model
+        assert manifest1.draft_rating == manifest2.draft_rating
+        assert manifest1.trader_action == manifest2.trader_action

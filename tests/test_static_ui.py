@@ -100,3 +100,15 @@ def test_index_html_has_localhost_bind_note(client):
     assert 'id="bind-localhost-note"' in body
     assert "127.0.0.1" in body
     assert "0.0.0.0" in body
+
+
+# ---------------------------------------------------------------------------
+# Phase 2F: strategy profile dropdown -- placeholder only, single option.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_index_html_has_strategy_profile_dropdown_with_placeholder_option(client):
+    body = client.get("/").text
+    assert 'id="strategy-profile-input"' in body
+    assert "None / Manual analysis" in body

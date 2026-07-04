@@ -250,6 +250,7 @@ def _execute_analysis_job(run_id: str, request: StartAnalysisRequest, runs_dir: 
             asset_type=request.asset_type,
             run_id=run_id,
             allow_existing_queued_run=True,
+            strategy_profile=request.strategy_profile,
         )
     except Exception:
         logger.exception("background analysis job %r failed", run_id)
@@ -312,6 +313,7 @@ def start_analysis(
                 ),
                 agents={},
                 updated_at=created_at,
+                strategy_profile=request.strategy_profile,
             ),
         )
         thread = threading.Thread(
@@ -323,7 +325,11 @@ def start_analysis(
             _ACTIVE_RUN_ID = None
         raise
 
-    return StartAnalysisResponse(run_id=run_id, analysis_status=AnalysisStatus.QUEUED)
+    return StartAnalysisResponse(
+        run_id=run_id,
+        analysis_status=AnalysisStatus.QUEUED,
+        strategy_profile=request.strategy_profile,
+    )
 
 
 # Mounted last, after every /api/... route above, so this catch-all can never

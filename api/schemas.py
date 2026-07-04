@@ -14,7 +14,13 @@ from __future__ import annotations
 from pydantic import BaseModel, field_validator
 
 from tradingagents.graph.analyst_execution import ANALYST_NODE_SPECS
-from tradingagents.run_contract import AnalysisDate, AnalysisStatus, OverallStatus, Ticker
+from tradingagents.run_contract import (
+    AnalysisDate,
+    AnalysisStatus,
+    OverallStatus,
+    StrategyProfile,
+    Ticker,
+)
 
 
 class RunSummary(BaseModel):
@@ -48,6 +54,11 @@ class StartAnalysisRequest(BaseModel):
     quick_model: str | None = None
     deep_model: str | None = None
     asset_type: str = "stock"
+    # Phase 2F placeholder for a future Pradeep-style knowledge base /
+    # scanner: pure passthrough to status/manifest, never read by
+    # _build_graph or any analysis logic. Defaults to null ("manual
+    # analysis, no profile").
+    strategy_profile: StrategyProfile = None
 
     @field_validator("selected_analysts")
     @classmethod
@@ -75,3 +86,4 @@ class StartAnalysisResponse(BaseModel):
 
     run_id: str
     analysis_status: AnalysisStatus
+    strategy_profile: StrategyProfile = None

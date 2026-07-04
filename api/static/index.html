@@ -58,6 +58,12 @@
         <label for="deep-model-input">Deep model</label>
         <input type="text" id="deep-model-input" value="deepseek-v4-flash" />
       </div>
+      <div class="field">
+        <label for="strategy-profile-input">Strategy profile</label>
+        <select id="strategy-profile-input">
+          <option value="">None / Manual analysis</option>
+        </select>
+      </div>
       <button id="start-button" type="button">Start analysis</button>
       <button id="reset-button" type="button" hidden>Start new analysis</button>
     </section>
@@ -74,6 +80,7 @@
 
     <section id="run-view" hidden>
       <h2>Run: <span id="run-id-label"></span> -- status: <span id="status-label"></span></h2>
+      <p>Strategy profile: <span id="strategy-profile-label"></span></p>
 
       <div class="run-columns">
         <div class="run-column">

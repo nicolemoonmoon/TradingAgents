@@ -212,9 +212,28 @@ def _validate_analysis_date(value: str) -> str:
     return value
 
 
+_STRATEGY_PROFILE_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+def _validate_strategy_profile(value: str | None) -> str | None:
+    """Phase 2F placeholder: a future Pradeep-style knowledge base/scanner
+    hasn't been built yet, so this only validates shape (safe charset,
+    reasonable length), not membership in any real profile registry --
+    there is no such registry to check against. ``None`` (the default,
+    meaning "manual analysis, no profile") always passes through."""
+    if value is None:
+        return value
+    if not _STRATEGY_PROFILE_RE.fullmatch(value):
+        raise ValueError(
+            f"strategy_profile must be 1-64 chars of [A-Za-z0-9_-] or null: {value!r}"
+        )
+    return value
+
+
 RunId = Annotated[str, AfterValidator(_validate_run_id)]
 Ticker = Annotated[str, AfterValidator(safe_ticker_component)]
 AnalysisDate = Annotated[str, AfterValidator(_validate_analysis_date)]
+StrategyProfile = Annotated[str | None, AfterValidator(_validate_strategy_profile)]
 
 
 # ---------------------------------------------------------------------------
@@ -254,6 +273,17 @@ class AnalysisManifest(_RunArtifactBase):
     data_quality_assessment: str = "not_available"
     data_quality_flags: list[str] = Field(default_factory=list)
     disclaimer_version: str = "research-only-v1"
+    # Phase 2F placeholders for a future Pradeep-style knowledge base /
+    # rule-matching scanner. Pure passthrough or schema reservation -- none
+    # of these are computed or consulted by anything in this codebase yet.
+    # All default to "nothing was used" so every existing manifest (Phase
+    # 0B-imported or produced by any pre-Phase-2F runner) round-trips
+    # unchanged.
+    strategy_profile: StrategyProfile = None
+    knowledge_version: str | None = None
+    matched_rules: list[str] = Field(default_factory=list)
+    strategy_score: float | None = None
+    knowledge_context_ids: list[str] = Field(default_factory=list)
 
 
 class RunStatus(_RunArtifactBase):
@@ -268,6 +298,10 @@ class RunStatus(_RunArtifactBase):
     agents: dict[AgentId, AgentStatus] = Field(default_factory=dict)
     latest_error: str | None = None
     updated_at: datetime
+    # Phase 2F placeholder, pure passthrough from the request -- present
+    # here (not just AnalysisManifest) so a future Compare Board can group
+    # in-progress runs by profile before they've completed.
+    strategy_profile: StrategyProfile = None
 
     @model_validator(mode="after")
     def _overall_status_must_match_derivation(self) -> RunStatus:

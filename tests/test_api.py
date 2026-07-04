@@ -140,10 +140,20 @@ POST_TIME = datetime(2026, 7, 3, 15, 0, 0, tzinfo=timezone.utc)
 
 @pytest.fixture
 def client(tmp_path):
+    # _ACTIVE_RUN_ID (Phase 2E) is a bare module global, not scoped to a
+    # test's own tmp_path/runs_dir -- a background thread from a prior test
+    # that hasn't reached its finally block yet can otherwise leak an
+    # "active run" into this test and cause a spurious 409. Reset on both
+    # ends so tests never depend on background-thread timing from a
+    # previous test.
+    import api.main as api_main
+
+    api_main._ACTIVE_RUN_ID = None
     app.dependency_overrides[get_runs_dir] = lambda: tmp_path
     app.dependency_overrides[get_clock] = lambda: (lambda: POST_TIME)
     yield TestClient(app)
     app.dependency_overrides.clear()
+    api_main._ACTIVE_RUN_ID = None
 
 
 # ---------------------------------------------------------------------------
@@ -446,7 +456,7 @@ def test_post_runs_does_not_block_and_immediate_gets_see_queued(client, monkeypa
     started_event = threading.Event()
     proceed_event = threading.Event()
 
-    def fake_run(self, ticker, analysis_date, *, asset_type="stock", run_id=None, allow_existing_queued_run=False):
+    def fake_run(self, ticker, analysis_date, *, asset_type="stock", run_id=None, allow_existing_queued_run=False, strategy_profile=None):
         started_event.set()
         proceed_event.wait(timeout=2)
 
@@ -664,3 +674,140 @@ def test_post_runs_409_active_run_response_includes_active_run_id(client, monkey
     assert "Only one active analysis is allowed per server process" in detail["message"]
 
     proceed_event.set()
+
+
+# ---------------------------------------------------------------------------
+# Phase 2F: strategy_profile placeholder -- pure passthrough to
+# status/manifest/response, never read by _build_graph or the analysis flow.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_post_runs_default_strategy_profile_is_null(client, monkeypatch):
+    monkeypatch.setattr("api.main._build_graph", lambda request: _TrivialFakeGraph())
+    monkeypatch.setattr(StreamingDeepSeekAnalysisRunner, "run", lambda self, *a, **kw: None)
+
+    resp = client.post("/api/runs", json={"ticker": "AAPL", "analysis_date": "2026-07-03"})
+
+    assert resp.status_code == 202
+    assert resp.json()["strategy_profile"] is None
+
+    status = client.get(f"/api/runs/{resp.json()['run_id']}/status").json()
+    assert status["strategy_profile"] is None
+
+
+@pytest.mark.unit
+def test_post_runs_strategy_profile_appears_in_response_status_and_manifest(client, monkeypatch):
+    build_graph_calls = []
+
+    def _build_graph(request):
+        build_graph_calls.append(request)
+        return _MinimalFakeGraph()
+
+    monkeypatch.setattr("api.main._build_graph", _build_graph)
+
+    resp = client.post(
+        "/api/runs",
+        json={
+            "ticker": "AAPL",
+            "analysis_date": "2026-07-03",
+            "strategy_profile": "pradeep_v1",
+        },
+    )
+    assert resp.status_code == 202
+    assert resp.json()["strategy_profile"] == "pradeep_v1"
+    run_id = resp.json()["run_id"]
+
+    # Passthrough only: the request that actually built the graph never saw
+    # strategy_profile influence selected_analysts/models -- it's the same
+    # request object the field simply rides along on, but _build_graph's own
+    # behavior (asserted in test_streaming_analysis_runner.py) doesn't branch
+    # on it at all.
+    assert build_graph_calls[0].strategy_profile == "pradeep_v1"
+
+    immediate_status = client.get(f"/api/runs/{run_id}/status").json()
+    assert immediate_status["strategy_profile"] == "pradeep_v1"
+
+    status = {}
+    for _ in range(50):
+        status = client.get(f"/api/runs/{run_id}/status").json()
+        if status["analysis_status"] in ("completed", "failed"):
+            break
+        time.sleep(0.02)
+    assert status["analysis_status"] == "completed"
+    assert status["strategy_profile"] == "pradeep_v1"
+
+    manifest = client.get(f"/api/runs/{run_id}/manifest").json()
+    assert manifest["strategy_profile"] == "pradeep_v1"
+
+
+@pytest.mark.unit
+def test_post_runs_rejects_invalid_strategy_profile(client, tmp_path, monkeypatch):
+    build_calls = []
+    run_calls = []
+    monkeypatch.setattr(
+        "api.main._build_graph",
+        lambda request: (build_calls.append(request), _TrivialFakeGraph())[1],
+    )
+    monkeypatch.setattr(
+        StreamingDeepSeekAnalysisRunner, "run", lambda self, *a, **kw: run_calls.append(1)
+    )
+
+    resp = client.post(
+        "/api/runs",
+        json={
+            "ticker": "AAPL",
+            "analysis_date": "2026-07-03",
+            "strategy_profile": "bad profile!",
+        },
+    )
+
+    assert resp.status_code == 422
+    assert build_calls == []
+    assert run_calls == []
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.unit
+def test_post_runs_strategy_profile_does_not_change_build_graph_arguments(client, monkeypatch):
+    # Same selected_analysts/models with vs. without strategy_profile must
+    # produce identical _build_graph call arguments for everything except
+    # the field itself -- proof it's not read to alter graph construction.
+    calls = []
+
+    def _build_graph(request):
+        calls.append(request)
+        return _TrivialFakeGraph()
+
+    monkeypatch.setattr("api.main._build_graph", _build_graph)
+    monkeypatch.setattr(StreamingDeepSeekAnalysisRunner, "run", lambda self, *a, **kw: None)
+
+    payload_without = {
+        "ticker": "AAPL",
+        "analysis_date": "2026-07-03",
+        "selected_analysts": ["market"],
+        "quick_model": "deepseek-v4-flash",
+        "deep_model": "deepseek-v4-flash",
+    }
+    payload_with = {**payload_without, "strategy_profile": "pradeep_v1"}
+
+    resp1 = client.post("/api/runs", json=payload_without)
+    assert resp1.status_code == 202
+
+    # The Phase 2E single-active-run guard means the second POST must wait
+    # for the background thread from the first (a no-op mocked .run()) to
+    # release the slot -- poll briefly rather than assume it already has.
+    resp2 = None
+    for _ in range(50):
+        resp2 = client.post("/api/runs", json={**payload_with, "ticker": "MSFT"})
+        if resp2.status_code == 202:
+            break
+        time.sleep(0.02)
+    assert resp2.status_code == 202
+
+    assert calls[0].selected_analysts == calls[1].selected_analysts
+    assert calls[0].quick_model == calls[1].quick_model
+    assert calls[0].deep_model == calls[1].deep_model
+    assert calls[0].asset_type == calls[1].asset_type
+    assert calls[0].strategy_profile is None
+    assert calls[1].strategy_profile == "pradeep_v1"

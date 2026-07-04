@@ -154,6 +154,7 @@ class StreamingDeepSeekAnalysisRunner:
         agent_id: AgentId | None = None,
         latest_error: str | None = None,
         error: str | None = None,
+        strategy_profile: str | None = None,
     ) -> RunStatus:
         """Append one event and immediately write the status snapshot after it."""
         ts = self._clock()
@@ -176,6 +177,7 @@ class StreamingDeepSeekAnalysisRunner:
             agents=agents,
             latest_error=latest_error,
             updated_at=ts,
+            strategy_profile=strategy_profile,
         )
         write_run_status(run_dir, status)
         return status
@@ -188,7 +190,15 @@ class StreamingDeepSeekAnalysisRunner:
         asset_type: str = "stock",
         run_id: str | None = None,
         allow_existing_queued_run: bool = False,
+        strategy_profile: str | None = None,
     ) -> tuple[AnalysisManifest, RunStatus]:
+        # Phase 2F: strategy_profile is pure passthrough -- threaded into
+        # every status write below via this closure and into the final
+        # manifest, never read to influence graph config, selected agents,
+        # or any other part of the analysis flow.
+        def emit(*args, **kwargs):
+            return self._emit(*args, strategy_profile=strategy_profile, **kwargs)
+
         created_at = self._clock()
         if run_id is None:
             run_id = f"{safe_ticker_component(ticker)}_{created_at:%Y%m%d_%H%M%S}"
@@ -205,7 +215,7 @@ class StreamingDeepSeekAnalysisRunner:
             # never sees a 404). Skip re-emitting run_queued -- the caller
             # already did.
         else:
-            self._emit(
+            emit(
                 run_dir,
                 run_id,
                 EventType.RUN_QUEUED,
@@ -214,7 +224,7 @@ class StreamingDeepSeekAnalysisRunner:
                 overall_status=OverallStatus.ANALYSIS_QUEUED,
                 agents={},
             )
-        self._emit(
+        emit(
             run_dir,
             run_id,
             EventType.ANALYSIS_STARTED,
@@ -226,7 +236,7 @@ class StreamingDeepSeekAnalysisRunner:
 
         agents: dict[AgentId, AgentStatus] = {}
         try:
-            self._emit(
+            emit(
                 run_dir,
                 run_id,
                 EventType.GRAPH_PROPAGATE_STARTED,
@@ -255,7 +265,7 @@ class StreamingDeepSeekAnalysisRunner:
             for chunk in self.graph.graph.stream(init_state, **args):
                 for completed_agent in detect_newly_completed_agents(previous_state, chunk):
                     agents[completed_agent] = AgentStatus.COMPLETED
-                    self._emit(
+                    emit(
                         run_dir,
                         run_id,
                         EventType.AGENT_COMPLETED,
@@ -268,7 +278,7 @@ class StreamingDeepSeekAnalysisRunner:
                 previous_state = chunk
                 final_state = chunk
 
-            self._emit(
+            emit(
                 run_dir,
                 run_id,
                 EventType.GRAPH_PROPAGATE_COMPLETED,
@@ -278,7 +288,7 @@ class StreamingDeepSeekAnalysisRunner:
                 agents=dict(agents),
             )
 
-            self._emit(
+            emit(
                 run_dir,
                 run_id,
                 EventType.REPORT_WRITE_STARTED,
@@ -288,7 +298,7 @@ class StreamingDeepSeekAnalysisRunner:
                 agents=dict(agents),
             )
             self.graph.save_reports(final_state, ticker, save_path=run_dir)
-            self._emit(
+            emit(
                 run_dir,
                 run_id,
                 EventType.REPORT_WRITE_COMPLETED,
@@ -305,7 +315,7 @@ class StreamingDeepSeekAnalysisRunner:
                 if s is AgentStatus.COMPLETED
             ]
 
-            self._emit(
+            emit(
                 run_dir,
                 run_id,
                 EventType.MANIFEST_WRITE_STARTED,
@@ -333,9 +343,10 @@ class StreamingDeepSeekAnalysisRunner:
                 position_context_available=False,
                 data_quality_assessment="not_available",
                 data_quality_flags=fields.data_quality_flags,
+                strategy_profile=strategy_profile,
             )
             write_analysis_manifest(run_dir, manifest, overwrite=False)
-            self._emit(
+            emit(
                 run_dir,
                 run_id,
                 EventType.MANIFEST_WRITE_COMPLETED,
@@ -345,7 +356,7 @@ class StreamingDeepSeekAnalysisRunner:
                 agents=dict(agents),
             )
 
-            status = self._emit(
+            status = emit(
                 run_dir,
                 run_id,
                 EventType.ANALYSIS_COMPLETED,
@@ -363,7 +374,7 @@ class StreamingDeepSeekAnalysisRunner:
             # mid-flight visibility and always records {} on failure), this
             # runner reports whichever agents genuinely completed before the
             # failure -- real observed progress, not a guess.
-            self._emit(
+            emit(
                 run_dir,
                 run_id,
                 EventType.ANALYSIS_FAILED,
