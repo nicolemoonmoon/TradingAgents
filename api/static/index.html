@@ -73,6 +73,10 @@
         <input type="radio" name="mode" id="mode-compare" value="compare" />
         Compare Board
       </label>
+      <label>
+        <input type="radio" name="mode" id="mode-scanner" value="scanner" />
+        Scanner
+      </label>
     </section>
 
     <section id="new-run-form">
@@ -149,6 +153,37 @@
           <tbody id="compare-table-body"></tbody>
         </table>
       </div>
+    </section>
+
+    <section id="scanner-board" hidden>
+      <p id="scanner-not-connected-notice" class="cost-hint">
+        Placeholder only -- Scanner v0 is not connected to real market data, the
+        Pradeep knowledge base, or any live scan, and it never calls
+        POST /api/runs. The strategy profile below is independent from the
+        "Strategy profile" dropdown in Run settings above -- choosing one here
+        does not change what an "Analyze" click will send. Use the box below to
+        simulate scanner output by typing tickers manually, then send them to
+        Candidate Board.
+      </p>
+      <div class="field">
+        <label for="scanner-profile-input">Scanner strategy profile</label>
+        <select id="scanner-profile-input">
+          <option value="">Manual / None</option>
+          <option value="placeholder_pradeep_9m">Pradeep 9M placeholder</option>
+          <option value="placeholder_pradeep_ep">Pradeep EP placeholder</option>
+          <option value="placeholder_pradeep_magna">Pradeep MAGNA placeholder</option>
+          <option value="placeholder_pradeep_anticipation">Pradeep Anticipation placeholder</option>
+        </select>
+      </div>
+      <ul id="scanner-profile-rules">
+        <li>No scanner rules -- manual/no profile selected.</li>
+      </ul>
+      <div class="field">
+        <label for="scanner-output-input">Simulated scanner output (comma-separated tickers)</label>
+        <input type="text" id="scanner-output-input" placeholder="AAPL, NVDA, TSLA" />
+      </div>
+      <button id="scanner-send-button" type="button">Send to Candidates</button>
+      <p id="scanner-send-status" class="cost-hint" hidden></p>
     </section>
 
     <p id="error-message" class="error" hidden></p>

@@ -11,10 +11,12 @@
   const modeLoad = el("mode-load");
   const modeCandidates = el("mode-candidates");
   const modeCompare = el("mode-compare");
+  const modeScanner = el("mode-scanner");
   const newRunForm = el("new-run-form");
   const loadRunForm = el("load-run-form");
   const candidateBoard = el("candidate-board");
   const compareBoard = el("compare-board");
+  const scannerBoard = el("scanner-board");
   const startButton = el("start-button");
   const resetButton = el("reset-button");
   const loadRunButton = el("load-run-button");
@@ -24,6 +26,11 @@
   const candidateTableBody = el("candidate-table-body");
   const compareTableBody = el("compare-table-body");
   const compareEmptyMessage = el("compare-empty-message");
+  const scannerProfileInput = el("scanner-profile-input");
+  const scannerProfileRules = el("scanner-profile-rules");
+  const scannerOutputInput = el("scanner-output-input");
+  const scannerSendButton = el("scanner-send-button");
+  const scannerSendStatus = el("scanner-send-status");
   const errorMessage = el("error-message");
   const runView = el("run-view");
   const runIdLabel = el("run-id-label");
@@ -61,12 +68,14 @@
     loadRunForm.hidden = mode !== "load";
     candidateBoard.hidden = mode !== "candidates";
     compareBoard.hidden = mode !== "compare";
+    scannerBoard.hidden = mode !== "scanner";
   }
 
   modeNew.addEventListener("change", () => setMode("new"));
   modeLoad.addEventListener("change", () => setMode("load"));
   modeCandidates.addEventListener("change", () => setMode("candidates"));
   modeCompare.addEventListener("change", () => setMode("compare"));
+  modeScanner.addEventListener("change", () => setMode("scanner"));
 
   function renderEvents(events) {
     eventTimeline.innerHTML = "";
@@ -467,6 +476,79 @@
       compareTableBody.appendChild(row);
     }
   }
+
+  // -------------------------------------------------------------------
+  // Scanner v0 (Phase 2I): pure UI placeholder for a future Pradeep-style
+  // scanner. No fetch anywhere in this block -- "Send to Candidates" only
+  // pushes into the same in-memory `candidates` array Candidate/Compare
+  // Board already render from. The profile value strings are prefixed
+  // `placeholder_` and are NOT a canonical strategy_profile registry --
+  // do not reuse them as real strategy_profile IDs once a real Pradeep
+  // knowledge base exists. Deliberately decoupled from the shared
+  // #strategy-profile-input setting: selecting a scanner profile here never
+  // changes what an "Analyze" click sends to POST /api/runs.
+  // -------------------------------------------------------------------
+
+  const SCANNER_PROFILES = [
+    {
+      value: "",
+      label: "Manual / None",
+      rules: ["No scanner rules -- manual/no profile selected."],
+    },
+    {
+      value: "placeholder_pradeep_9m",
+      label: "Pradeep 9M placeholder",
+      rules: [
+        "price > 3 (placeholder)",
+        "expected volume > 9,000,000 shares (placeholder)",
+        "day change > 4% (placeholder)",
+      ],
+    },
+    {
+      value: "placeholder_pradeep_ep",
+      label: "Pradeep EP placeholder",
+      rules: ["revenue growth placeholder", "earnings-catalyst emphasis placeholder"],
+    },
+    {
+      value: "placeholder_pradeep_magna",
+      label: "Pradeep MAGNA placeholder",
+      rules: ["3 tight days placeholder", "momentum consolidation placeholder"],
+    },
+    {
+      value: "placeholder_pradeep_anticipation",
+      label: "Pradeep Anticipation placeholder",
+      rules: ["anticipated catalyst placeholder", "pre-breakout setup placeholder"],
+    },
+  ];
+
+  function renderScannerProfileRules() {
+    const profile = SCANNER_PROFILES.find((p) => p.value === scannerProfileInput.value);
+    scannerProfileRules.innerHTML = "";
+    for (const rule of profile ? profile.rules : []) {
+      const li = document.createElement("li");
+      li.textContent = rule;
+      scannerProfileRules.appendChild(li);
+    }
+  }
+
+  scannerProfileInput.addEventListener("change", renderScannerProfileRules);
+
+  function showScannerSendStatus(message) {
+    scannerSendStatus.textContent = message;
+    scannerSendStatus.hidden = false;
+  }
+
+  scannerSendButton.addEventListener("click", () => {
+    const raw = scannerOutputInput.value;
+    const tickers = parseTickerInput(raw);
+    if (tickers.length === 0) {
+      showScannerSendStatus("Enter at least one ticker to send.");
+      return;
+    }
+    addCandidates(raw);
+    scannerOutputInput.value = "";
+    showScannerSendStatus(`Sent ${tickers.length} ticker(s) to Candidate Board: ${tickers.join(", ")}`);
+  });
 
   renderCandidates();
 })();

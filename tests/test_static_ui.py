@@ -204,3 +204,75 @@ def test_index_html_has_compare_table_container(client):
 def test_index_html_has_human_notes_column_header(client):
     body = client.get("/").text
     assert "Human Notes" in body
+
+
+# ---------------------------------------------------------------------------
+# Phase 2I: Scanner v0 -- pure UI placeholder, no fetch, no new API. Manually
+# simulates scanner output and sends it into the same in-memory `candidates`
+# array Candidate/Compare Board already render from (verified manually in a
+# browser, same as the rest of app.js's dynamic behavior -- see the Phase 2I
+# plan).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_index_html_has_scanner_tab(client):
+    body = client.get("/").text
+    assert 'id="mode-scanner"' in body
+    assert "Scanner" in body
+
+
+@pytest.mark.unit
+def test_index_html_has_scanner_profile_selector_with_placeholder_options(client):
+    body = client.get("/").text
+    assert 'id="scanner-profile-input"' in body
+    for label in (
+        "Pradeep 9M placeholder",
+        "Pradeep EP placeholder",
+        "Pradeep MAGNA placeholder",
+        "Pradeep Anticipation placeholder",
+    ):
+        assert label in body
+
+
+@pytest.mark.unit
+def test_index_html_has_scanner_output_input_and_send_button(client):
+    body = client.get("/").text
+    assert 'id="scanner-output-input"' in body
+    assert 'id="scanner-send-button"' in body
+    assert "Send to Candidates" in body
+
+
+@pytest.mark.unit
+def test_index_html_has_scanner_not_connected_notice(client):
+    body = client.get("/").text
+    assert 'id="scanner-not-connected-notice"' in body
+    assert "not connected to real market data" in body
+    assert "never calls" in body
+    assert "POST /api/runs" in body
+
+
+@pytest.mark.unit
+def test_index_html_existing_ids_still_present_after_scanner_tab(client):
+    # Regression guard for Phase 2I: Scanner is additive and must not touch
+    # Start/Load/Candidate Board/Compare Board's existing structure.
+    body = client.get("/").text
+    for expected_id in (
+        "ticker-input",
+        "start-button",
+        "reset-button",
+        "run-id-input",
+        "load-run-button",
+        "mode-new",
+        "mode-load",
+        "mode-candidates",
+        "candidate-board",
+        "candidate-ticker-input",
+        "candidate-add-button",
+        "candidate-table-body",
+        "mode-compare",
+        "compare-board",
+        "compare-table-body",
+        "compare-empty-message",
+    ):
+        assert f'id="{expected_id}"' in body
