@@ -19,22 +19,12 @@
   </header>
 
   <main>
-    <section id="mode-switch">
-      <label>
-        <input type="radio" name="mode" id="mode-new" value="new" checked />
-        Start new analysis
-      </label>
-      <label>
-        <input type="radio" name="mode" id="mode-load" value="load" />
-        Load existing run
-      </label>
-    </section>
-
-    <section id="new-run-form">
-      <div class="field">
-        <label for="ticker-input">Ticker</label>
-        <input type="text" id="ticker-input" value="AAPL" />
-      </div>
+    <section id="shared-run-settings">
+      <h2>Run settings</h2>
+      <p class="cost-hint">
+        Used by both "Start new analysis" and Candidate Board -- one shared
+        configuration for every analysis this page can start.
+      </p>
       <div class="field">
         <label for="analysis-date-input">Analysis date</label>
         <input type="date" id="analysis-date-input" />
@@ -64,6 +54,28 @@
           <option value="">None / Manual analysis</option>
         </select>
       </div>
+    </section>
+
+    <section id="mode-switch">
+      <label>
+        <input type="radio" name="mode" id="mode-new" value="new" checked />
+        Start new analysis
+      </label>
+      <label>
+        <input type="radio" name="mode" id="mode-load" value="load" />
+        Load existing run
+      </label>
+      <label>
+        <input type="radio" name="mode" id="mode-candidates" value="candidates" />
+        Candidate Board
+      </label>
+    </section>
+
+    <section id="new-run-form">
+      <div class="field">
+        <label for="ticker-input">Ticker</label>
+        <input type="text" id="ticker-input" value="AAPL" />
+      </div>
       <button id="start-button" type="button">Start analysis</button>
       <button id="reset-button" type="button" hidden>Start new analysis</button>
     </section>
@@ -74,6 +86,34 @@
         <input type="text" id="run-id-input" placeholder="AAPL_20260703_070744" />
       </div>
       <button id="load-run-button" type="button">Load</button>
+    </section>
+
+    <section id="candidate-board" hidden>
+      <p class="cost-hint">
+        Analyze uses the analysis date / analysts / models / strategy
+        profile from the shared run settings above. A candidate only shows
+        results for a run started from its own "Analyze" button in this
+        browser session -- it does not look up past runs for that ticker.
+      </p>
+      <div class="field">
+        <label for="candidate-ticker-input">Add tickers (comma-separated)</label>
+        <input type="text" id="candidate-ticker-input" placeholder="AAPL, NVDA, TSLA" />
+      </div>
+      <button id="candidate-add-button" type="button">Add</button>
+      <table id="candidate-table">
+        <thead>
+          <tr>
+            <th>Ticker</th>
+            <th>Strategy Profile</th>
+            <th>Status</th>
+            <th>Trader Action</th>
+            <th>Draft Rating</th>
+            <th>Data Quality Flags</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="candidate-table-body"></tbody>
+      </table>
     </section>
 
     <p id="error-message" class="error" hidden></p>

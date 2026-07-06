@@ -112,3 +112,54 @@ def test_index_html_has_strategy_profile_dropdown_with_placeholder_option(client
     body = client.get("/").text
     assert 'id="strategy-profile-input"' in body
     assert "None / Manual analysis" in body
+
+
+# ---------------------------------------------------------------------------
+# Phase 2G: Candidate Board -- shared run settings + a third mode tab.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_index_html_has_shared_run_settings_section(client):
+    # Plan A: analysis_date/analysts/models/strategy_profile live in one
+    # shared section used by both "Start new analysis" and Candidate Board,
+    # not duplicated inside #new-run-form.
+    body = client.get("/").text
+    assert 'id="shared-run-settings"' in body
+    assert 'id="analysis-date-input"' in body
+    assert 'id="quick-model-input"' in body
+    assert 'id="deep-model-input"' in body
+    assert 'id="strategy-profile-input"' in body
+
+
+@pytest.mark.unit
+def test_index_html_has_candidate_board_tab(client):
+    body = client.get("/").text
+    assert 'id="mode-candidates"' in body
+    assert "Candidate Board" in body
+
+
+@pytest.mark.unit
+def test_index_html_has_candidate_board_inputs(client):
+    body = client.get("/").text
+    assert 'id="candidate-board"' in body
+    assert 'id="candidate-ticker-input"' in body
+    assert 'id="candidate-add-button"' in body
+    assert 'id="candidate-table-body"' in body
+
+
+@pytest.mark.unit
+def test_index_html_existing_start_and_load_ids_still_present(client):
+    # Regression guard for the Plan A restructuring: the ids the existing
+    # start-run/load-run flows depend on must survive unchanged.
+    body = client.get("/").text
+    for expected_id in (
+        "ticker-input",
+        "start-button",
+        "reset-button",
+        "run-id-input",
+        "load-run-button",
+        "mode-new",
+        "mode-load",
+    ):
+        assert f'id="{expected_id}"' in body
