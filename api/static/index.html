@@ -69,6 +69,10 @@
         <input type="radio" name="mode" id="mode-candidates" value="candidates" />
         Candidate Board
       </label>
+      <label>
+        <input type="radio" name="mode" id="mode-compare" value="compare" />
+        Compare Board
+      </label>
     </section>
 
     <section id="new-run-form">
@@ -114,6 +118,37 @@
         </thead>
         <tbody id="candidate-table-body"></tbody>
       </table>
+    </section>
+
+    <section id="compare-board" hidden>
+      <p class="cost-hint">
+        Shows every candidate from Candidate Board side by side. Catalyst
+        Quality / Sector Strength / Volume Quality / Chart Setup are not
+        computed yet -- they always read "Not reviewed" until a future
+        Scanner/Knowledge Base phase fills them in. Human Notes is a
+        free-text scratchpad, kept only in this browser tab's memory.
+      </p>
+      <p id="compare-empty-message">No candidates yet -- add some in Candidate Board.</p>
+      <div class="table-scroll">
+        <table id="compare-table">
+          <thead>
+            <tr>
+              <th>Ticker</th>
+              <th>Strategy Profile</th>
+              <th>Run Status</th>
+              <th>Trader Action</th>
+              <th>Draft Rating</th>
+              <th>Data Quality Flags</th>
+              <th>Catalyst Quality</th>
+              <th>Sector Strength</th>
+              <th>Volume Quality</th>
+              <th>Chart Setup</th>
+              <th>Human Notes</th>
+            </tr>
+          </thead>
+          <tbody id="compare-table-body"></tbody>
+        </table>
+      </div>
     </section>
 
     <p id="error-message" class="error" hidden></p>

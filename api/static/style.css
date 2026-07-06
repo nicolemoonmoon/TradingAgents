@@ -129,6 +129,37 @@ button {
   margin-top: 0.25rem;
 }
 
+.table-scroll {
+  overflow-x: auto;
+}
+
+#compare-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 0.75rem;
+  white-space: nowrap;
+}
+
+#compare-table th,
+#compare-table td {
+  text-align: left;
+  padding: 0.4rem;
+  border-bottom: 1px solid #ddd;
+  font-size: 0.9rem;
+}
+
+.placeholder-cell {
+  color: #999;
+  font-style: italic;
+}
+
+.compare-notes-input {
+  width: 100%;
+  min-width: 12rem;
+  padding: 0.3rem;
+  font-size: 0.85rem;
+}
+
 .run-columns {
   display: flex;
   flex-direction: column;

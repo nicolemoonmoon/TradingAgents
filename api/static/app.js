@@ -10,9 +10,11 @@
   const modeNew = el("mode-new");
   const modeLoad = el("mode-load");
   const modeCandidates = el("mode-candidates");
+  const modeCompare = el("mode-compare");
   const newRunForm = el("new-run-form");
   const loadRunForm = el("load-run-form");
   const candidateBoard = el("candidate-board");
+  const compareBoard = el("compare-board");
   const startButton = el("start-button");
   const resetButton = el("reset-button");
   const loadRunButton = el("load-run-button");
@@ -20,6 +22,8 @@
   const candidateTickerInput = el("candidate-ticker-input");
   const candidateAddButton = el("candidate-add-button");
   const candidateTableBody = el("candidate-table-body");
+  const compareTableBody = el("compare-table-body");
+  const compareEmptyMessage = el("compare-empty-message");
   const errorMessage = el("error-message");
   const runView = el("run-view");
   const runIdLabel = el("run-id-label");
@@ -56,11 +60,13 @@
     newRunForm.hidden = mode !== "new";
     loadRunForm.hidden = mode !== "load";
     candidateBoard.hidden = mode !== "candidates";
+    compareBoard.hidden = mode !== "compare";
   }
 
   modeNew.addEventListener("change", () => setMode("new"));
   modeLoad.addEventListener("change", () => setMode("load"));
   modeCandidates.addEventListener("change", () => setMode("candidates"));
+  modeCompare.addEventListener("change", () => setMode("compare"));
 
   function renderEvents(events) {
     eventTimeline.innerHTML = "";
@@ -269,9 +275,18 @@
         draftRating: null,
         dataQualityFlags: null,
         errorMessage: null,
+        // Phase 2H: Compare Board fields. The four "*Quality"/"*Strength"/
+        // "chartSetup" fields are pure placeholders -- nothing in this repo
+        // computes them yet, they always stay null. humanNotes is the one
+        // real user input, in-memory only.
+        catalystQuality: null,
+        sectorStrength: null,
+        volumeQuality: null,
+        chartSetup: null,
+        humanNotes: "",
       });
     }
-    renderCandidateTable();
+    renderCandidates();
   }
 
   function currentStrategyProfileLabel() {
@@ -348,7 +363,7 @@
         candidate.dataQualityFlags = snapshot.manifest.data_quality_flags;
       }
     }
-    renderCandidateTable();
+    renderCandidates();
   }
 
   async function analyzeCandidate(candidate) {
@@ -357,17 +372,17 @@
       const { resp, body } = await postAnalysis(candidate.ticker);
       if (resp.status !== 202) {
         candidate.errorMessage = `Failed: ${JSON.stringify(body.detail ?? body)}`;
-        renderCandidateTable();
+        renderCandidates();
         return;
       }
       candidate.runId = body.run_id;
       candidate.strategyProfile = body.strategy_profile;
       candidate.analysisStatus = body.analysis_status;
-      renderCandidateTable();
+      renderCandidates();
       ensureCandidatePolling();
     } catch (err) {
       candidate.errorMessage = `Failed: ${err}`;
-      renderCandidateTable();
+      renderCandidates();
     }
   }
 
@@ -375,4 +390,83 @@
     addCandidates(candidateTickerInput.value);
     candidateTickerInput.value = "";
   });
+
+  // -------------------------------------------------------------------
+  // Compare Board (Phase 2H): reads the exact same `candidates` array and
+  // objects as Candidate Board above -- no separate data source, no fetch
+  // of its own. Any update Candidate Board makes to a candidate object is
+  // automatically visible here once renderCandidates() runs, since both
+  // render functions read the same references.
+  // -------------------------------------------------------------------
+
+  let compareNotesFocused = false;
+
+  function renderCandidates() {
+    renderCandidateTable();
+    if (!compareNotesFocused) {
+      renderCompareTable();
+    }
+  }
+
+  function formatPlaceholder(value) {
+    return value === null || value === undefined ? "Not reviewed" : value;
+  }
+
+  function renderCompareTable() {
+    compareEmptyMessage.hidden = candidates.length > 0;
+    compareTableBody.innerHTML = "";
+    for (const candidate of candidates) {
+      const row = document.createElement("tr");
+
+      const cells = [
+        candidate.ticker,
+        formatCandidateStrategyProfile(candidate),
+        candidate.analysisStatus ?? "not run",
+        candidate.traderAction ?? "—",
+        candidate.draftRating ?? "—",
+        formatDataQualityFlags(candidate.dataQualityFlags),
+      ];
+      for (const text of cells) {
+        const td = document.createElement("td");
+        td.textContent = text;
+        row.appendChild(td);
+      }
+
+      for (const value of [
+        candidate.catalystQuality,
+        candidate.sectorStrength,
+        candidate.volumeQuality,
+        candidate.chartSetup,
+      ]) {
+        const td = document.createElement("td");
+        td.textContent = formatPlaceholder(value);
+        if (value === null || value === undefined) {
+          td.className = "placeholder-cell";
+        }
+        row.appendChild(td);
+      }
+
+      const notesCell = document.createElement("td");
+      const notesInput = document.createElement("input");
+      notesInput.type = "text";
+      notesInput.className = "compare-notes-input";
+      notesInput.value = candidate.humanNotes;
+      notesInput.addEventListener("focus", () => {
+        compareNotesFocused = true;
+      });
+      notesInput.addEventListener("blur", () => {
+        compareNotesFocused = false;
+        renderCompareTable();
+      });
+      notesInput.addEventListener("input", (event) => {
+        candidate.humanNotes = event.target.value;
+      });
+      notesCell.appendChild(notesInput);
+      row.appendChild(notesCell);
+
+      compareTableBody.appendChild(row);
+    }
+  }
+
+  renderCandidates();
 })();

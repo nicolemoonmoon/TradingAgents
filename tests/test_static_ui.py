@@ -163,3 +163,44 @@ def test_index_html_existing_start_and_load_ids_still_present(client):
         "mode-load",
     ):
         assert f'id="{expected_id}"' in body
+
+
+@pytest.mark.unit
+def test_index_html_existing_candidate_board_ids_still_present(client):
+    # Regression guard for Phase 2H: Compare Board is additive and must not
+    # touch Candidate Board's existing structure.
+    body = client.get("/").text
+    for expected_id in (
+        "mode-candidates",
+        "candidate-board",
+        "candidate-ticker-input",
+        "candidate-add-button",
+        "candidate-table-body",
+    ):
+        assert f'id="{expected_id}"' in body
+
+
+# ---------------------------------------------------------------------------
+# Phase 2H: Compare Board -- reads the same in-memory candidates, no fetch.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_index_html_has_compare_board_tab(client):
+    body = client.get("/").text
+    assert 'id="mode-compare"' in body
+    assert "Compare Board" in body
+
+
+@pytest.mark.unit
+def test_index_html_has_compare_table_container(client):
+    body = client.get("/").text
+    assert 'id="compare-board"' in body
+    assert 'id="compare-table-body"' in body
+    assert 'id="compare-empty-message"' in body
+
+
+@pytest.mark.unit
+def test_index_html_has_human_notes_column_header(client):
+    body = client.get("/").text
+    assert "Human Notes" in body
