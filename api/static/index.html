@@ -21,9 +21,9 @@
   <main>
     <section id="shared-run-settings">
       <h2>Run settings</h2>
-      <p class="cost-hint">
-        Used by both "Start new analysis" and Candidate Board -- one shared
-        configuration for every analysis this page can start.
+      <p id="shared-run-settings-scope-hint" class="cost-hint">
+        These settings are used only when you start a real analysis. Scanner,
+        Compare Board, and Load Run do not use them.
       </p>
       <div class="field">
         <label for="analysis-date-input">Analysis date</label>
@@ -58,12 +58,8 @@
 
     <section id="mode-switch">
       <label>
-        <input type="radio" name="mode" id="mode-new" value="new" checked />
-        Start new analysis
-      </label>
-      <label>
-        <input type="radio" name="mode" id="mode-load" value="load" />
-        Load existing run
+        <input type="radio" name="mode" id="mode-scanner" value="scanner" checked />
+        Scanner
       </label>
       <label>
         <input type="radio" name="mode" id="mode-candidates" value="candidates" />
@@ -74,12 +70,19 @@
         Compare Board
       </label>
       <label>
-        <input type="radio" name="mode" id="mode-scanner" value="scanner" />
-        Scanner
+        <input type="radio" name="mode" id="mode-new" value="new" />
+        Start Analysis
+      </label>
+      <label>
+        <input type="radio" name="mode" id="mode-load" value="load" />
+        Load Run
       </label>
     </section>
 
-    <section id="new-run-form">
+    <section id="new-run-form" hidden>
+      <p id="start-analysis-cost-hint" class="cost-hint">
+        Starting an analysis creates a new run and uses DeepSeek.
+      </p>
       <div class="field">
         <label for="ticker-input">Ticker</label>
         <input type="text" id="ticker-input" value="AAPL" />
@@ -89,6 +92,9 @@
     </section>
 
     <section id="load-run-form" hidden>
+      <p id="load-run-readonly-hint" class="cost-hint">
+        Load Run only opens saved results. It does not start a new analysis.
+      </p>
       <div class="field">
         <label for="run-id-input">Run ID</label>
         <input type="text" id="run-id-input" placeholder="AAPL_20260703_070744" />
@@ -97,6 +103,9 @@
     </section>
 
     <section id="candidate-board" hidden>
+      <p id="candidate-analysis-cost-hint" class="cost-hint">
+        Reviewing candidates is free. DeepSeek runs only when you click Analyze.
+      </p>
       <p class="cost-hint">
         Analyze uses the analysis date / analysts / models / strategy
         profile from the shared run settings above. A candidate only shows
@@ -125,6 +134,9 @@
     </section>
 
     <section id="compare-board" hidden>
+      <p id="compare-session-hint" class="cost-hint">
+        Compare Board only compares saved runs. It does not start a new analysis.
+      </p>
       <p class="cost-hint">
         Shows every candidate from Candidate Board side by side. Catalyst
         Quality / Sector Strength / Volume Quality / Chart Setup are not
@@ -155,15 +167,10 @@
       </div>
     </section>
 
-    <section id="scanner-board" hidden>
+    <section id="scanner-board">
       <p id="scanner-not-connected-notice" class="cost-hint">
-        Placeholder only -- Scanner v0 is not connected to real market data, the
-        Pradeep knowledge base, or any live scan, and it never calls
-        POST /api/runs. The strategy profile below is independent from the
-        "Strategy profile" dropdown in Run settings above -- choosing one here
-        does not change what an "Analyze" click will send. Use the box below to
-        simulate scanner output by typing tickers manually, then send them to
-        Candidate Board.
+        Scanner is a manual list for now. It does not use market data, the
+        Pradeep knowledge base, or DeepSeek.
       </p>
       <div class="field">
         <label for="scanner-profile-input">Scanner strategy profile</label>
@@ -179,8 +186,8 @@
         <li>No scanner rules -- manual/no profile selected.</li>
       </ul>
       <div class="field">
-        <label for="scanner-output-input">Simulated scanner output (comma-separated tickers)</label>
-        <input type="text" id="scanner-output-input" placeholder="AAPL, NVDA, TSLA" />
+        <label for="scanner-output-input">Tickers to send to Candidate Board</label>
+        <input type="text" id="scanner-output-input" placeholder="AAPL, MSFT, NVDA" />
       </div>
       <button id="scanner-send-button" type="button">Send to Candidates</button>
       <p id="scanner-send-status" class="cost-hint" hidden></p>

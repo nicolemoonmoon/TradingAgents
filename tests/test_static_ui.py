@@ -27,6 +27,33 @@ def client(tmp_path):
     app.dependency_overrides.clear()
 
 
+def _extract_p_text(body: str, element_id: str) -> str:
+    """Whitespace-normalized text content of a ``<p id="...">`` element.
+
+    String-based, not an HTML parser -- relies on none of these particular
+    hint paragraphs nesting another tag inside them (true for every id this
+    is used with). Avoids both a new parsing dependency and false negatives
+    from HTML line-wrapping splitting a phrase across a newline.
+    """
+    marker = f'id="{element_id}"'
+    start = body.index(marker)
+    open_tag_end = body.index(">", start) + 1
+    close_tag_start = body.index("</p>", open_tag_end)
+    return " ".join(body[open_tag_end:close_tag_start].split())
+
+
+def _extract_section_html(body: str, section_id: str) -> str:
+    """Raw HTML of a ``<section id="...">`` element through its first
+    ``</section>``. None of this project's tab sections nest another
+    ``<section>`` inside them, so the first closing tag after the opening
+    one is always the matching one.
+    """
+    marker = f'<section id="{section_id}"'
+    start = body.index(marker)
+    end = body.index("</section>", start) + len("</section>")
+    return body[start:end]
+
+
 @pytest.mark.unit
 def test_index_html_served_at_root(client):
     resp = client.get("/")
@@ -130,6 +157,68 @@ def test_index_html_has_shared_run_settings_section(client):
     assert 'id="quick-model-input"' in body
     assert 'id="deep-model-input"' in body
     assert 'id="strategy-profile-input"' in body
+
+
+@pytest.mark.unit
+def test_shared_run_settings_scope_hint(client):
+    # Phase 2K Step 4B: the shared settings block is used by both Start
+    # Analysis and a candidate's Analyze action -- Scanner/Compare
+    # Board/Load Run never touch it. Scoped to the hint's own text, not a
+    # global body assertion, and not an exact-wording match (only stable
+    # phrases) so future copy edits don't need to touch this test.
+    body = client.get("/").text
+
+    assert body.count('id="shared-run-settings-scope-hint"') == 1
+
+    settings_section = _extract_section_html(body, "shared-run-settings")
+    assert 'id="shared-run-settings-scope-hint"' in settings_section
+
+    hint_text = _extract_p_text(body, "shared-run-settings-scope-hint")
+    assert hint_text != ""
+    for phrase in (
+        "used only when you start a real analysis",
+        "Scanner",
+        "Compare Board",
+        "Load Run",
+        "do not use",
+    ):
+        assert phrase in hint_text
+
+
+# ---------------------------------------------------------------------------
+# Phase 2K Step 5B: navigation defaults -- tab DOM order and the
+# checked/hidden state the page loads with. Identified as untested in Step
+# 5A's audit: every prior test only checked id/text presence, never order or
+# attribute state.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_mode_switch_tab_order(client):
+    body = client.get("/").text
+    mode_switch_html = _extract_section_html(body, "mode-switch")
+    positions = {
+        tab: mode_switch_html.index(f'id="mode-{tab}"')
+        for tab in ("scanner", "candidates", "compare", "new", "load")
+    }
+    assert positions["scanner"] < positions["candidates"] < positions["compare"]
+    assert positions["compare"] < positions["new"] < positions["load"]
+
+
+@pytest.mark.unit
+def test_mode_switch_default_radio_and_panel_state(client):
+    body = client.get("/").text
+    mode_switch_html = _extract_section_html(body, "mode-switch")
+
+    assert mode_switch_html.count('name="mode"') == 5
+    assert mode_switch_html.count("checked") == 1
+    assert 'id="mode-scanner" value="scanner" checked' in mode_switch_html
+
+    assert '<section id="scanner-board">' in body
+    assert '<section id="new-run-form" hidden>' in body
+    assert '<section id="load-run-form" hidden>' in body
+    assert '<section id="candidate-board" hidden>' in body
+    assert '<section id="compare-board" hidden>' in body
 
 
 @pytest.mark.unit
@@ -244,12 +333,27 @@ def test_index_html_has_scanner_output_input_and_send_button(client):
 
 
 @pytest.mark.unit
-def test_index_html_has_scanner_not_connected_notice(client):
+def test_scanner_notice_explains_disconnected_behavior(client):
+    # Phase 2K Step 3C: the old version of this test asserted the literal
+    # endpoint string "POST /api/runs" appears in the notice -- Step 3B's
+    # product goal was specifically to stop the Scanner copy from exposing
+    # that internal endpoint name. This replaces that stale contract with
+    # one scoped to the notice's own text: assert on stable, endpoint-free
+    # phrasing, and assert the endpoint string is now absent.
     body = client.get("/").text
-    assert 'id="scanner-not-connected-notice"' in body
-    assert "not connected to real market data" in body
-    assert "never calls" in body
-    assert "POST /api/runs" in body
+
+    scanner_section = _extract_section_html(body, "scanner-board")
+    assert 'id="scanner-not-connected-notice"' in scanner_section
+
+    notice_text = _extract_p_text(body, "scanner-not-connected-notice")
+    for phrase in (
+        "manual list",
+        "does not use market data",
+        "Pradeep knowledge base",
+        "DeepSeek",
+    ):
+        assert phrase in notice_text
+    assert "POST /api/runs" not in notice_text
 
 
 @pytest.mark.unit
@@ -276,3 +380,33 @@ def test_index_html_existing_ids_still_present_after_scanner_tab(client):
         "compare-empty-message",
     ):
         assert f'id="{expected_id}"' in body
+
+
+# ---------------------------------------------------------------------------
+# Phase 2K Step 3C: each tab's cost/behavior hint must live inside its own
+# tab section, not just exist somewhere on the page. Attribution + non-empty
+# only -- no exact-wording match, so future copy edits don't need to touch
+# this test.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "section_id, hint_id",
+    [
+        ("candidate-board", "candidate-analysis-cost-hint"),
+        ("new-run-form", "start-analysis-cost-hint"),
+        ("compare-board", "compare-session-hint"),
+        ("load-run-form", "load-run-readonly-hint"),
+    ],
+)
+def test_tab_hint_lives_inside_its_section(client, section_id, hint_id):
+    body = client.get("/").text
+
+    assert f'<section id="{section_id}"' in body  # parent section/form exists
+
+    section_html = _extract_section_html(body, section_id)
+    assert f'id="{hint_id}"' in section_html  # hint is inside the correct parent
+
+    hint_text = _extract_p_text(body, hint_id)
+    assert hint_text != ""  # non-empty

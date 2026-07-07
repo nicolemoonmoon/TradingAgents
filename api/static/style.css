@@ -55,6 +55,10 @@ fieldset.field label {
   margin: 0.5rem 0 0;
 }
 
+.cost-hint + * {
+  margin-top: 1rem;
+}
+
 .bind-note {
   font-size: 0.75rem;
   color: #777;
