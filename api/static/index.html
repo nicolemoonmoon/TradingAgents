@@ -117,20 +117,22 @@
         <input type="text" id="candidate-ticker-input" placeholder="AAPL, NVDA, TSLA" />
       </div>
       <button id="candidate-add-button" type="button">Add</button>
-      <table id="candidate-table">
-        <thead>
-          <tr>
-            <th>Ticker</th>
-            <th>Strategy Profile</th>
-            <th>Status</th>
-            <th>Trader Action</th>
-            <th>Draft Rating</th>
-            <th>Data Quality Flags</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody id="candidate-table-body"></tbody>
-      </table>
+      <div class="table-scroll">
+        <table id="candidate-table">
+          <thead>
+            <tr>
+              <th>Ticker</th>
+              <th>Strategy Profile</th>
+              <th>Status</th>
+              <th>Trader Action</th>
+              <th>Draft Rating</th>
+              <th>Data Quality Flags</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="candidate-table-body"></tbody>
+        </table>
+      </div>
     </section>
 
     <section id="compare-board" hidden>
@@ -196,7 +198,13 @@
     <p id="error-message" class="error" hidden></p>
 
     <section id="run-view" hidden>
-      <h2>Run: <span id="run-id-label"></span> -- status: <span id="status-label"></span></h2>
+      <div class="run-summary">
+        <h2>Run</h2>
+        <div class="run-meta">
+          <span class="run-id-chip" id="run-id-label"></span>
+          <span class="status-badge" id="status-label"></span>
+        </div>
+      </div>
       <p>Strategy profile: <span id="strategy-profile-label"></span></p>
 
       <div class="run-columns">

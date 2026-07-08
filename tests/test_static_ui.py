@@ -238,6 +238,27 @@ def test_index_html_has_candidate_board_inputs(client):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    "section_id, table_id",
+    [
+        ("candidate-board", "candidate-table"),
+        ("compare-board", "compare-table"),
+    ],
+)
+def test_table_is_wrapped_in_table_scroll(client, section_id, table_id):
+    body = client.get("/").text
+    assert f'id="{table_id}"' in body
+
+    section_html = _extract_section_html(body, section_id)
+    wrapper_start = section_html.index('class="table-scroll"')
+    table_start = section_html.index(f'id="{table_id}"')
+    table_close = section_html.index("</table>", table_start)
+    wrapper_close = section_html.index("</div>", table_close)
+
+    assert wrapper_start < table_start < table_close < wrapper_close
+
+
+@pytest.mark.unit
 def test_index_html_existing_start_and_load_ids_still_present(client):
     # Regression guard for the Plan A restructuring: the ids the existing
     # start-run/load-run flows depend on must survive unchanged.
@@ -410,3 +431,15 @@ def test_tab_hint_lives_inside_its_section(client, section_id, hint_id):
 
     hint_text = _extract_p_text(body, hint_id)
     assert hint_text != ""  # non-empty
+
+
+@pytest.mark.unit
+def test_run_view_header_has_no_legacy_dash_status_format(client):
+    # Phase 3 Step 3D-4: the run header used to be a single "Run: X -- status:
+    # Y" line -- replaced with a structured .run-summary block. Structural
+    # presence only, no CSS pixel/color assertions.
+    body = client.get("/").text
+    assert 'class="run-summary"' in body
+    assert 'id="run-id-label"' in body
+    assert 'id="status-label"' in body
+    assert " -- status:" not in body

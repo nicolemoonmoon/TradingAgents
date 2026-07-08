@@ -97,7 +97,9 @@ button {
 }
 
 #mode-switch label {
-  margin-right: 1.5rem;
+  display: inline-block;
+  padding: 0.4rem 0.6rem;
+  margin: 0 0.5rem 0.5rem 0;
 }
 
 #shared-run-settings {
@@ -184,6 +186,172 @@ button {
   padding: 0.3rem 0.5rem;
   border-bottom: 1px solid #eee;
   font-size: 0.9rem;
+}
+
+#run-view {
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  padding: 0.75rem;
+  margin-bottom: 1rem;
+  background: #fff;
+}
+
+#run-view h2 {
+  font-size: 1.1rem;
+  margin: 0 0 0.5rem;
+}
+
+#run-view > p {
+  margin: 0 0 0.75rem;
+}
+
+.run-column h3 {
+  font-size: 0.95rem;
+  margin: 0 0 0.5rem;
+}
+
+#final-decision {
+  margin-top: 1rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid #ddd;
+}
+
+#final-decision p {
+  margin: 0 0 0.4rem;
+}
+
+#event-timeline li {
+  overflow-wrap: anywhere;
+}
+
+.agent-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.agent-name {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.status-badge {
+  flex-shrink: 0;
+  min-width: 5.5rem;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  text-align: center;
+  background: #eee;
+  color: #555;
+}
+
+.status-badge.status-completed {
+  background: #e6f4ea;
+  color: #2e7d32;
+}
+
+.status-badge.status-failed {
+  background: #fdeaec;
+  color: #b00020;
+}
+
+.status-badge.status-running {
+  background: #e3f0fc;
+  color: #1565c0;
+}
+
+.run-summary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+#run-view .run-summary h2 {
+  margin: 0;
+}
+
+.run-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.run-id-chip {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 0.85rem;
+  background: #f0f0f0;
+  border-radius: 4px;
+  padding: 0.15rem 0.5rem;
+  overflow-wrap: anywhere;
+}
+
+#status-label.status-badge {
+  min-width: 6.5rem;
+  padding: 0.25rem 0.75rem;
+  font-size: 0.85rem;
+}
+
+.decision-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 5rem;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  background: #eee;
+  color: #555;
+}
+
+.decision-badge.decision-buy {
+  background: #e6f4ea;
+  color: #2e7d32;
+}
+
+.decision-badge.decision-sell {
+  background: #fdeaec;
+  color: #b00020;
+}
+
+.decision-badge.decision-hold {
+  background: #e3f0fc;
+  color: #1565c0;
+}
+
+.decision-badge.decision-neutral {
+  background: #e3f0fc;
+  color: #1565c0;
+}
+
+.decision-badge.decision-unknown {
+  background: #eee;
+  color: #555;
+}
+
+.event-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.25rem 0.75rem;
+}
+
+.event-type {
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.event-time {
+  color: #777;
+  font-size: 0.8rem;
+  flex-shrink: 0;
 }
 
 @media (min-width: 768px) {

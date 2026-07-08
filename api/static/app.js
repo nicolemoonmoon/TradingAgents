@@ -45,6 +45,10 @@
   const reportLink = el("report-link");
 
   let pollTimer = null;
+  // Which run_id (if any) has been started/loaded this session. #run-view
+  // belongs to the Load Run tab only -- setMode() is the single place that
+  // decides run-view.hidden; nothing else may set it directly.
+  let currentRunId = null;
 
   function showError(message) {
     errorMessage.textContent = message;
@@ -69,6 +73,7 @@
     candidateBoard.hidden = mode !== "candidates";
     compareBoard.hidden = mode !== "compare";
     scannerBoard.hidden = mode !== "scanner";
+    runView.hidden = mode !== "load" || currentRunId === null;
   }
 
   modeNew.addEventListener("change", () => setMode("new"));
@@ -81,7 +86,18 @@
     eventTimeline.innerHTML = "";
     for (const event of events) {
       const li = document.createElement("li");
-      li.textContent = `${event.event_type} @ ${event.created_at}`;
+      li.className = "event-row";
+
+      const typeSpan = document.createElement("span");
+      typeSpan.className = "event-type";
+      typeSpan.textContent = event.event_type;
+
+      const timeSpan = document.createElement("span");
+      timeSpan.className = "event-time";
+      timeSpan.textContent = event.created_at;
+
+      li.appendChild(typeSpan);
+      li.appendChild(timeSpan);
       eventTimeline.appendChild(li);
     }
   }
@@ -90,15 +106,39 @@
     agentList.innerHTML = "";
     for (const [agentId, agentStatus] of Object.entries(agents || {})) {
       const li = document.createElement("li");
-      li.textContent = `${agentId}: ${agentStatus}`;
+      li.className = "agent-row";
+
+      const nameSpan = document.createElement("span");
+      nameSpan.className = "agent-name";
+      nameSpan.textContent = agentId;
+
+      const statusSpan = document.createElement("span");
+      statusSpan.className = "status-badge";
+      statusSpan.classList.add(`status-${safeStatusClass(agentStatus)}`);
+      statusSpan.textContent = formatStatusLabel(agentStatus);
+
+      li.appendChild(nameSpan);
+      li.appendChild(statusSpan);
       agentList.appendChild(li);
     }
   }
 
+  function safeStatusClass(value) {
+    return String(value || "unknown")
+      .toLowerCase()
+      .replace(/[^a-z0-9_-]+/g, "-");
+  }
+
+  function formatStatusLabel(value) {
+    return String(value || "unknown")
+      .replace(/[_-]+/g, " ")
+      .replace(/\b\w/g, (char) => char.toUpperCase());
+  }
+
   function setStatusLabel(analysisStatus) {
-    statusLabel.textContent = analysisStatus;
+    statusLabel.textContent = formatStatusLabel(analysisStatus);
     statusLabel.classList.remove(...STATUS_CLASSES);
-    statusLabel.classList.add(`status-${analysisStatus}`);
+    statusLabel.classList.add(`status-${safeStatusClass(analysisStatus)}`);
   }
 
   function formatDataQualityFlags(flags) {
@@ -107,7 +147,9 @@
   }
 
   function renderFinalDecision(runId, manifest) {
-    traderActionLabel.textContent = manifest.trader_action ?? "(none)";
+    traderActionLabel.textContent = formatStatusLabel(manifest.trader_action);
+    traderActionLabel.className = "decision-badge";
+    traderActionLabel.classList.add(`decision-${safeStatusClass(manifest.trader_action)}`);
     draftRatingLabel.textContent = manifest.draft_rating ?? "(none)";
     dataQualityFlagsLabel.textContent = formatDataQualityFlags(manifest.data_quality_flags);
     reportLink.href = `/api/runs/${encodeURIComponent(runId)}/reports/complete_report`;
@@ -170,7 +212,7 @@
     }
 
     clearError();
-    runView.hidden = false;
+    currentRunId = runId;
     runIdLabel.textContent = runId;
     setStatusLabel(snapshot.status.analysis_status);
     strategyProfileLabel.textContent = snapshot.status.strategy_profile ?? "(none)";
@@ -213,6 +255,10 @@
         startButton.disabled = false;
         return;
       }
+      currentRunId = body.run_id;
+      modeLoad.checked = true;
+      runIdInput.value = body.run_id;
+      setMode("load");
       startPolling(body.run_id);
     } catch (err) {
       showError(`Failed to start analysis: ${err}`);
@@ -224,7 +270,9 @@
 
   resetButton.addEventListener("click", () => {
     stopPolling();
-    runView.hidden = true;
+    currentRunId = null;
+    modeNew.checked = true;
+    setMode("new");
     finalDecision.hidden = true;
     startButton.hidden = false;
     startButton.disabled = false;
@@ -238,6 +286,8 @@
       showError("Enter a run ID to load.");
       return;
     }
+    currentRunId = runId;
+    setMode("load");
     startPolling(runId);
   });
 
@@ -247,6 +297,7 @@
 
   const urlRunId = readRunIdFromUrl();
   if (urlRunId) {
+    currentRunId = urlRunId;
     modeLoad.checked = true;
     setMode("load");
     runIdInput.value = urlRunId;
