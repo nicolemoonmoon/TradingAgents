@@ -24,3 +24,14 @@ Your default role is **Executor/Reviewer**, not a freeform architect. Do not ass
   - tradingagents/reporting.py
 - If a task becomes unclear or high-risk mid-execution, stop and request Architect review rather than guessing.
 - Report back with a compact delta report only — no full-file dumps, no narrated history.
+
+## Efficiency and Source-Safety Rules
+
+- Batch safe validation commands inside the same scoped task when allowed.
+- For blocker/regression fixes, use one scoped repair pass instead of repeated micro-patches.
+- Do not tolerate agent bad habits: incomplete preview, truncated/corrupted code, prompt residue, TODO/stubs/placeholders, diff markers, markdown fences, broken fragments.
+- If the same edit path produces corrupted/truncated/incomplete output twice, stop and switch to one of:
+  - read-only diagnosis
+  - unified diff
+  - exact-match patch
+  - architect review

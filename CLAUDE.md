@@ -37,6 +37,14 @@ Every task must begin by declaring exactly one mode:
 - Read-only final gate / second opinion.
 - No fixing.
 
+## Efficiency and Source-Safety Rules
+
+- In Executor Mode, do not request one permission per tiny validation command when safe checks can be grouped.
+- For blocker/regression, use one scoped repair pass only after scope/root cause is clear.
+- In Architect Mode, if root cause is not clear, do not recommend patching.
+- Do not tolerate agent bad habits: incomplete preview, truncated/corrupted code, prompt residue, TODO/stubs/placeholders, diff markers, markdown fences, broken fragments.
+- If the edit path produces corrupted/truncated output twice, stop and recommend handoff to read-only diagnosis / unified diff / exact-match patch / architect review.
+
 ## Terminal Mismatch Rule
 
 If the task does not match the current declared mode, stop and output a recommended handoff Task Brief instead of proceeding.

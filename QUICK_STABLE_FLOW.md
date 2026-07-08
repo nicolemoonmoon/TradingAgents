@@ -88,6 +88,11 @@ Later only:
 
 If the same issue returns after 2 modification attempts, stop patching immediately and switch to read-only diagnosis / architect review / call-chain evidence gathering.
 
+- This is the global rule for repeated failure on the same issue.
+- The bad edit-path fallback (see Efficiency and Source-Safety Rules) is a source-safety application of this same rule: if the same edit path produces corrupted/truncated/incomplete output twice, stop using that edit path.
+- Blocker/regression scoped repair (see Efficiency and Source-Safety Rules) is the preferred first repair shape when root cause and scope are clear: diagnosis + minimal fix + targeted tests + validation + compact report.
+- If the scoped repair fails twice, or produces bad fragments twice, this Two-Failure Stop Rule applies: stop and switch to read-only diagnosis / unified diff / exact-match patch / architect review.
+
 ## Context Hygiene
 
 Every terminal gets only:
@@ -114,6 +119,18 @@ No full chat-history dumps.
 - broad rewrite
 - whole-file rewrite
 - commit without explicit approval
+
+## Efficiency and Source-Safety Rules
+
+- If multiple read-only checks, syntax checks, diff checks, unsafe-fragment scans, and targeted validations are safe within the same scoped task, they should be batched into one approval/request instead of one-by-one permission loops.
+- Read-only QA may be combined.
+- Code changes must still remain isolated to allowed files.
+- For blocker/regression bugs, do not patch line-by-line through repeated micro-edits.
+- Use one scoped repair pass: diagnosis + minimal fix + targeted tests + validation + compact report.
+- The scoped repair must only address the blocker. Do not do cosmetic polish or unrelated cleanup.
+- Do not tolerate agent bad habits: incomplete preview, truncated/corrupted code, prompt residue, TODO/stubs/placeholders, diff markers, markdown fences, broken fragments.
+- If bad fragments appear more than once, stop using that edit path and switch to read-only diagnosis, unified diff, exact-match patch, or architect review.
+- This rule saves token by reducing rework, not by skipping validation.
 
 ## Required Report Format
 
