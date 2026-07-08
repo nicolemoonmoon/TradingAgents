@@ -35,3 +35,16 @@ Your default role is **Executor/Reviewer**, not a freeform architect. Do not ass
   - unified diff
   - exact-match patch
   - architect review
+
+## Prompt Language Policy
+
+- User ↔ GPT discussion can be Chinese.
+- Project execution prompts sent to Claude/Codex should be English by default.
+- Reason: reduce token cost, reduce ambiguity, and align with code/file/API terminology.
+- Exceptions: Chinese is allowed when the task is about:
+  - user-facing Chinese copy
+  - translation
+  - Chinese documentation
+  - Chinese text/content review
+  - any task where Chinese wording itself is the object being edited or evaluated
+- This policy governs input prompts sent to project agents. It does not change any existing user-facing response-language preference.

@@ -45,6 +45,19 @@ Every task must begin by declaring exactly one mode:
 - Do not tolerate agent bad habits: incomplete preview, truncated/corrupted code, prompt residue, TODO/stubs/placeholders, diff markers, markdown fences, broken fragments.
 - If the edit path produces corrupted/truncated output twice, stop and recommend handoff to read-only diagnosis / unified diff / exact-match patch / architect review.
 
+## Prompt Language Policy
+
+- User ↔ GPT discussion can be Chinese.
+- Project execution prompts sent to Claude/Codex should be English by default.
+- Reason: reduce token cost, reduce ambiguity, and align with code/file/API terminology.
+- Exceptions: Chinese is allowed when the task is about:
+  - user-facing Chinese copy
+  - translation
+  - Chinese documentation
+  - Chinese text/content review
+  - any task where Chinese wording itself is the object being edited or evaluated
+- This policy governs input prompts sent to project agents. It does not change any existing user-facing response-language preference.
+
 ## Terminal Mismatch Rule
 
 If the task does not match the current declared mode, stop and output a recommended handoff Task Brief instead of proceeding.
