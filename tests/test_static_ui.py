@@ -83,6 +83,29 @@ def test_style_css_served(client):
     assert "text/css" in resp.headers["content-type"]
 
 
+# ---------------------------------------------------------------------------
+# Phase 4D: status-cancelled CSS presence
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_style_css_has_status_cancelled_label_rule(client):
+    """Phase 4D: the #status-label element must have a .status-cancelled
+    variant rule so a cancelled run's status text renders with distinct styling
+    rather than falling through to the default (unstyled) color."""
+    body = client.get("/style.css").text
+    assert "#status-label.status-cancelled" in body
+
+
+@pytest.mark.unit
+def test_style_css_has_status_cancelled_badge_rule(client):
+    """Phase 4D: the .status-badge component must have a .status-cancelled
+    variant rule so cancelled agent status badges are visually distinct from
+    the base gray badge style."""
+    body = client.get("/style.css").text
+    assert ".status-badge.status-cancelled" in body
+
+
 @pytest.mark.unit
 def test_api_routes_still_work_after_static_mount(client):
     # A misordered app.mount("/", StaticFiles(...)) added before the /api/...

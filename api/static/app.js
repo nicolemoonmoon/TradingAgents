@@ -217,13 +217,19 @@
   async function refreshRun(runId) {
     const snapshot = await fetchRunSnapshot(runId);
     if (!snapshot.found) {
-      // Only a genuine 404 (run directory gone) is permanent — network errors
-      // and server-side transient failures (5xx) should not permanently kill
-      // polling. The next poll interval will retry automatically.
+      // Permanent errors: stop polling and show the reason.
       if (snapshot.statusCode === 404) {
         stopPolling();
         showError(`Run ${runId} not found.`);
+        return;
       }
+      if (snapshot.statusCode === 400) {
+        stopPolling();
+        showError("Invalid run ID. Please check the run ID and try again.");
+        return;
+      }
+      // Transient failures (network error 0, server 5xx) — keep polling
+      // silently, the next interval will retry automatically.
       return;
     }
 
@@ -267,7 +273,14 @@
     try {
       const { resp, body } = await postAnalysis(el("ticker-input").value.trim());
       if (resp.status !== 202) {
-        showError(`Failed to start analysis: ${JSON.stringify(body.detail ?? body)}`);
+        if (resp.status === 409 && body.detail?.active_run_id) {
+          showError(
+            `Another analysis (${body.detail.active_run_id}) is already running. ` +
+              "Only one active analysis is allowed per server process."
+          );
+        } else {
+          showError(`Failed to start analysis: ${JSON.stringify(body.detail ?? body)}`);
+        }
         startButton.disabled = false;
         return;
       }
@@ -447,7 +460,12 @@
     try {
       const { resp, body } = await postAnalysis(candidate.ticker);
       if (resp.status !== 202) {
-        candidate.errorMessage = `Failed: ${JSON.stringify(body.detail ?? body)}`;
+        if (resp.status === 409 && body.detail?.active_run_id) {
+          candidate.errorMessage =
+            `Busy: analysis ${body.detail.active_run_id} already running`;
+        } else {
+          candidate.errorMessage = `Failed: ${JSON.stringify(body.detail ?? body)}`;
+        }
         renderCandidates();
         return;
       }
