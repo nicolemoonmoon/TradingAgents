@@ -2,8 +2,8 @@
   "use strict";
 
   const POLL_INTERVAL_MS = 2000;
-  const TERMINAL_STATUSES = new Set(["completed", "failed"]);
-  const STATUS_CLASSES = ["status-queued", "status-running", "status-completed", "status-failed"];
+  const TERMINAL_STATUSES = new Set(["completed", "failed", "cancelled"]);
+  const STATUS_CLASSES = ["status-queued", "status-running", "status-completed", "status-failed", "status-cancelled"];
 
   const el = (id) => document.getElementById(id);
 
@@ -165,11 +165,22 @@
   // status, plus its manifest once completed. Never fetches events -- only
   // the single-run view needs the timeline.
   async function fetchRunSnapshot(runId) {
-    const { resp: statusResp, body: status } = await fetchJson(
-      `/api/runs/${encodeURIComponent(runId)}/status`
-    );
+    let statusResp, status;
+    try {
+      const result = await fetchJson(
+        `/api/runs/${encodeURIComponent(runId)}/status`
+      );
+      statusResp = result.resp;
+      status = result.body;
+    } catch {
+      // Network error (fetch itself threw, e.g. connection refused during a
+      // server restart) — transient, caller should keep polling.
+      return { found: false, statusCode: 0 };
+    }
     if (!statusResp.ok) {
-      return { found: false };
+      // Distinguish genuine 404 (run directory gone) from transient failures
+      // (server restart returning 503, gateway timeout 504, etc.).
+      return { found: false, statusCode: statusResp.status };
     }
     let manifest = null;
     if (status.analysis_status === "completed") {
@@ -206,8 +217,13 @@
   async function refreshRun(runId) {
     const snapshot = await fetchRunSnapshot(runId);
     if (!snapshot.found) {
-      stopPolling();
-      showError(`Run ${runId} not found.`);
+      // Only a genuine 404 (run directory gone) is permanent — network errors
+      // and server-side transient failures (5xx) should not permanently kill
+      // polling. The next poll interval will retry automatically.
+      if (snapshot.statusCode === 404) {
+        stopPolling();
+        showError(`Run ${runId} not found.`);
+      }
       return;
     }
 
