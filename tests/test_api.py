@@ -1359,3 +1359,165 @@ def test_get_events_mixed_valid_and_corrupt_returns_only_valid(client, tmp_path)
     assert resp.status_code == 200
     event_types = [e["event_type"] for e in resp.json()]
     assert event_types == ["run_queued"]
+
+
+# ---------------------------------------------------------------------------
+# Phase 7B: provider/model routing boundary characterization.
+# Tests call _build_graph directly (no POST, no real graph construction)
+# to characterize how StartAnalysisRequest fields map to graph config.
+# ---------------------------------------------------------------------------
+
+
+class _CapturingFakeGraph:
+    """Captures all constructor args without touching LLM clients."""
+
+    def __init__(self, selected_analysts, config, debug):
+        self.selected_analysts = selected_analysts
+        self.config = dict(config)
+        self.debug = debug
+
+
+@pytest.mark.unit
+def test_build_graph_default_config_populated_from_default_config(monkeypatch):
+    """Phase 7B: _build_graph copies DEFAULT_CONFIG — llm_provider,
+    quick_think_llm, and deep_think_llm come from the default config
+    when no overrides are provided."""
+    from api.main import _build_graph
+    from api.schemas import StartAnalysisRequest
+
+    captured = []
+
+    def fake_graph(selected_analysts, config, debug):
+        captured.append(dict(config))
+        return _CapturingFakeGraph(selected_analysts, config, debug)
+
+    monkeypatch.setattr("api.main.TradingAgentsGraph", fake_graph)
+
+    request = StartAnalysisRequest(ticker="AAPL", analysis_date="2026-07-03")
+    _build_graph(request)
+
+    assert len(captured) == 1
+    config = captured[0]
+    assert config["llm_provider"] is not None
+    assert isinstance(config["llm_provider"], str)
+    assert config["quick_think_llm"] is not None
+    assert isinstance(config["quick_think_llm"], str)
+    assert config["deep_think_llm"] is not None
+    assert isinstance(config["deep_think_llm"], str)
+
+
+@pytest.mark.unit
+def test_build_graph_quick_model_overrides_only_quick_think_llm(monkeypatch):
+    """Phase 7B: StartAnalysisRequest.quick_model overrides only the
+    quick_think_llm config key — deep_think_llm and llm_provider are
+    left unchanged."""
+    from api.main import _build_graph
+    from api.schemas import StartAnalysisRequest
+
+    captured = []
+
+    def fake_graph(selected_analysts, config, debug):
+        captured.append(dict(config))
+        return _CapturingFakeGraph(selected_analysts, config, debug)
+
+    monkeypatch.setattr("api.main.TradingAgentsGraph", fake_graph)
+
+    request = StartAnalysisRequest(
+        ticker="AAPL",
+        analysis_date="2026-07-03",
+        quick_model="custom-quick-model",
+    )
+    _build_graph(request)
+
+    config = captured[0]
+    assert config["quick_think_llm"] == "custom-quick-model"
+    # deep_model was not set, so deep_think_llm stays at DEFAULT_CONFIG value.
+    assert config["deep_think_llm"] != "custom-quick-model"
+
+
+@pytest.mark.unit
+def test_build_graph_deep_model_overrides_only_deep_think_llm(monkeypatch):
+    """Phase 7B: StartAnalysisRequest.deep_model overrides only the
+    deep_think_llm config key — quick_think_llm and llm_provider are
+    left unchanged."""
+    from api.main import _build_graph
+    from api.schemas import StartAnalysisRequest
+
+    captured = []
+
+    def fake_graph(selected_analysts, config, debug):
+        captured.append(dict(config))
+        return _CapturingFakeGraph(selected_analysts, config, debug)
+
+    monkeypatch.setattr("api.main.TradingAgentsGraph", fake_graph)
+
+    request = StartAnalysisRequest(
+        ticker="AAPL",
+        analysis_date="2026-07-03",
+        deep_model="custom-deep-model",
+    )
+    _build_graph(request)
+
+    config = captured[0]
+    assert config["deep_think_llm"] == "custom-deep-model"
+    assert config["quick_think_llm"] != "custom-deep-model"
+
+
+@pytest.mark.unit
+def test_build_graph_strategy_profile_does_not_affect_model_routing(monkeypatch):
+    """Phase 7B: strategy_profile is pure passthrough — it does not change
+    llm_provider, quick_think_llm, or deep_think_llm in the graph config.
+    Documents current behavior before any Phase 7C routing/allowlist work."""
+    from api.main import _build_graph
+    from api.schemas import StartAnalysisRequest
+
+    captured = []
+
+    def fake_graph(selected_analysts, config, debug):
+        captured.append(dict(config))
+        return _CapturingFakeGraph(selected_analysts, config, debug)
+
+    monkeypatch.setattr("api.main.TradingAgentsGraph", fake_graph)
+
+    request = StartAnalysisRequest(
+        ticker="AAPL",
+        analysis_date="2026-07-03",
+        strategy_profile="pradeep_v1",
+    )
+    _build_graph(request)
+
+    config = captured[0]
+    # strategy_profile is never mapped to llm_provider or model config keys.
+    assert "strategy_profile" not in config
+
+
+@pytest.mark.unit
+def test_build_graph_empty_model_string_passed_through_as_is(monkeypatch):
+    """Phase 7B: characterize current behavior — an empty string passed as
+    quick_model or deep_model is set directly on the config dict (falsy
+    Python values are not treated as 'not provided'). Documents current
+    free-form model routing before any Phase 7C validation/allowlist work."""
+    from api.main import _build_graph
+    from api.schemas import StartAnalysisRequest
+
+    captured = []
+
+    def fake_graph(selected_analysts, config, debug):
+        captured.append(dict(config))
+        return _CapturingFakeGraph(selected_analysts, config, debug)
+
+    monkeypatch.setattr("api.main.TradingAgentsGraph", fake_graph)
+
+    request = StartAnalysisRequest(
+        ticker="AAPL",
+        analysis_date="2026-07-03",
+        quick_model="",
+        deep_model="",
+    )
+    _build_graph(request)
+
+    config = captured[0]
+    # Empty strings are falsy — the current _build_graph only sets the key
+    # when request.quick_model is truthy, so these should remain at default.
+    assert config["quick_think_llm"] != ""
+    assert config["deep_think_llm"] != ""
