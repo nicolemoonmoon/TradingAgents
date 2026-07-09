@@ -1188,3 +1188,174 @@ def test_list_runs_healthy_only_has_empty_damaged_runs(client, tmp_path):
 
     assert resp.status_code == 200
     assert resp.json()["damaged_runs"] == []
+
+
+# ---------------------------------------------------------------------------
+# Phase 6B: hardened artifact read endpoints — corrupted/schema-invalid
+# status.json and analysis_manifest.json must return controlled 500,
+# not unhandled tracebacks.
+# ---------------------------------------------------------------------------
+
+
+# -- corrupted status.json ---------------------------------------------------
+
+
+@pytest.mark.unit
+def test_get_status_corrupted_json_returns_500(client, tmp_path):
+    """Phase 6B: GET status with corrupt (not valid JSON) status.json
+    returns 500 with a clear message, not an unhandled traceback."""
+    run_dir = tmp_path / "AAPL_20260703_150000"
+    run_dir.mkdir()
+    (run_dir / "status.json").write_text("not valid json {{{", encoding="utf-8")
+
+    resp = client.get("/api/runs/AAPL_20260703_150000/status")
+
+    assert resp.status_code == 500
+    detail = resp.json()["detail"]
+    assert "corrupted or invalid" in detail
+    assert "AAPL_20260703_150000" in detail
+
+
+@pytest.mark.unit
+def test_get_status_schema_invalid_json_returns_500(client, tmp_path):
+    """Phase 6B: GET status with schema-invalid (valid JSON, wrong fields)
+    status.json returns 500 with a clear message."""
+    run_dir = tmp_path / "AAPL_20260703_150000"
+    run_dir.mkdir()
+    (run_dir / "status.json").write_text('{"schema_version": "1.0"}', encoding="utf-8")
+
+    resp = client.get("/api/runs/AAPL_20260703_150000/status")
+
+    assert resp.status_code == 500
+    detail = resp.json()["detail"]
+    assert "corrupted or invalid" in detail
+
+
+# -- corrupted manifest ------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_get_manifest_corrupted_json_returns_500(client, tmp_path):
+    """Phase 6B: GET manifest with corrupt analysis_manifest.json
+    returns 500 with a clear message."""
+    run_dir = tmp_path / "AAPL_20260703_150000"
+    run_dir.mkdir()
+    (run_dir / "status.json").write_text(
+        RunStatus(
+            run_id="AAPL_20260703_150000",
+            analysis_status=AnalysisStatus.COMPLETED,
+            review_status=ReviewStatus.NOT_REQUESTED,
+            overall_status=derive_overall_status(
+                AnalysisStatus.COMPLETED, ReviewStatus.NOT_REQUESTED
+            ),
+            agents={},
+            updated_at=CREATED_AT,
+        ).model_dump_json(),
+        encoding="utf-8",
+    )
+    (run_dir / "analysis_manifest.json").write_text("garbage not json", encoding="utf-8")
+
+    resp = client.get("/api/runs/AAPL_20260703_150000/manifest")
+
+    assert resp.status_code == 500
+    detail = resp.json()["detail"]
+    assert "corrupted or invalid" in detail
+    assert "AAPL_20260703_150000" in detail
+
+
+@pytest.mark.unit
+def test_get_manifest_schema_invalid_json_returns_500(client, tmp_path):
+    """Phase 6B: GET manifest with schema-invalid analysis_manifest.json
+    returns 500 with a clear message."""
+    run_dir = tmp_path / "AAPL_20260703_150000"
+    run_dir.mkdir()
+    (run_dir / "status.json").write_text(
+        RunStatus(
+            run_id="AAPL_20260703_150000",
+            analysis_status=AnalysisStatus.COMPLETED,
+            review_status=ReviewStatus.NOT_REQUESTED,
+            overall_status=derive_overall_status(
+                AnalysisStatus.COMPLETED, ReviewStatus.NOT_REQUESTED
+            ),
+            agents={},
+            updated_at=CREATED_AT,
+        ).model_dump_json(),
+        encoding="utf-8",
+    )
+    (run_dir / "analysis_manifest.json").write_text(
+        '{"schema_version": "1.0", "artifact_type": "analysis_manifest"}',
+        encoding="utf-8",
+    )
+
+    resp = client.get("/api/runs/AAPL_20260703_150000/manifest")
+
+    assert resp.status_code == 500
+    detail = resp.json()["detail"]
+    assert "corrupted or invalid" in detail
+
+
+# -- events: corrupted lines -------------------------------------------------
+
+
+@pytest.mark.unit
+def test_get_events_all_corrupted_lines_returns_empty_list(client, tmp_path):
+    """Phase 6B: when every line in events.jsonl is corrupt or invalid,
+    GET events returns 200 with an empty list — no crash, no 500."""
+    run_dir = tmp_path / "AAPL_20260703_150000"
+    run_dir.mkdir()
+    (run_dir / "events.jsonl").write_text(
+        "garbage line 1\nalso garbage\n{{{not json\n",
+        encoding="utf-8",
+    )
+
+    resp = client.get("/api/runs/AAPL_20260703_150000/events")
+
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+@pytest.mark.unit
+def test_get_events_blank_lines_are_skipped(client, tmp_path):
+    """Phase 6B: blank lines in events.jsonl are skipped — only non-blank
+    lines are parsed. This is existing behavior, now explicitly tested."""
+    run_dir = tmp_path / "AAPL_20260703_150000"
+    run_dir.mkdir()
+    event = RunEvent(
+        event_type=EventType.RUN_QUEUED,
+        run_id="AAPL_20260703_150000",
+        created_at=CREATED_AT,
+    )
+    (run_dir / "events.jsonl").write_text(
+        f"\n\n{event.model_dump_json()}\n\n\n",
+        encoding="utf-8",
+    )
+
+    resp = client.get("/api/runs/AAPL_20260703_150000/events")
+
+    assert resp.status_code == 200
+    events = resp.json()
+    assert len(events) == 1
+    assert events[0]["event_type"] == "run_queued"
+
+
+@pytest.mark.unit
+def test_get_events_mixed_valid_and_corrupt_returns_only_valid(client, tmp_path):
+    """Phase 6B: a mix of valid and corrupt lines in events.jsonl returns
+    only the valid events — corrupt lines are silently skipped."""
+    run_dir = tmp_path / "AAPL_20260703_150000"
+    run_dir.mkdir()
+    valid = RunEvent(
+        event_type=EventType.RUN_QUEUED,
+        run_id="AAPL_20260703_150000",
+        created_at=CREATED_AT,
+    )
+    (run_dir / "events.jsonl").write_text(
+        f"not valid json\n{valid.model_dump_json()}\nalso bad\n",
+        encoding="utf-8",
+    )
+
+    resp = client.get("/api/runs/AAPL_20260703_150000/events")
+
+    assert resp.status_code == 200
+    event_types = [e["event_type"] for e in resp.json()]
+    assert event_types == ["run_queued"]

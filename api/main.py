@@ -198,7 +198,13 @@ def get_status(run_id: str, runs_dir: Path = Depends(get_runs_dir)) -> RunStatus
     path = run_dir / STATUS_FILENAME
     if not path.is_file():
         raise HTTPException(status_code=404, detail=f"status not available for run {run_id!r}")
-    return RunStatus.model_validate_json(path.read_text(encoding="utf-8"))
+    try:
+        return RunStatus.model_validate_json(path.read_text(encoding="utf-8"))
+    except (ValidationError, ValueError) as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"status.json for run {run_id!r} is corrupted or invalid",
+        ) from exc
 
 
 @app.get("/api/runs/{run_id}/manifest", response_model=AnalysisManifest)
@@ -211,7 +217,13 @@ def get_manifest(run_id: str, runs_dir: Path = Depends(get_runs_dir)) -> Analysi
             detail=f"manifest not available for run {run_id!r} "
             "(analysis may still be running or may have failed)",
         )
-    return AnalysisManifest.model_validate_json(path.read_text(encoding="utf-8"))
+    try:
+        return AnalysisManifest.model_validate_json(path.read_text(encoding="utf-8"))
+    except (ValidationError, ValueError) as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"analysis_manifest.json for run {run_id!r} is corrupted or invalid",
+        ) from exc
 
 
 @app.get("/api/runs/{run_id}/events", response_model=list[RunEvent])
@@ -227,8 +239,8 @@ def get_events(run_id: str, runs_dir: Path = Depends(get_runs_dir)) -> list[RunE
             continue
         try:
             events.append(RunEvent.model_validate_json(line))
-        except ValidationError:
-            # Tolerate a truncated trailing line (append_run_event's own
+        except (ValidationError, ValueError):
+            # Tolerate a corrupt or truncated line (append_run_event's own
             # documented durability caveat: a crash mid-write can leave one
             # unparsable final line) rather than failing the whole request.
             continue
