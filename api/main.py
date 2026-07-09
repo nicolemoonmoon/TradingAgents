@@ -49,6 +49,7 @@ Run with: ``uvicorn api.main:app --reload --host 127.0.0.1`` (requires the
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 from collections.abc import Callable
@@ -62,7 +63,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 
 from api.config import get_clock, get_runs_dir
-from api.schemas import RunSummary, StartAnalysisRequest, StartAnalysisResponse
+from api.schemas import DamagedRun, RunListResponse, RunSummary, StartAnalysisRequest, StartAnalysisResponse
 from tradingagents.dataflows.utils import safe_ticker_component
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.graph.trading_graph import TradingAgentsGraph
@@ -123,21 +124,44 @@ def _resolve_run_dir(runs_dir: Path, run_id: str) -> Path:
     return run_dir
 
 
-@app.get("/api/runs", response_model=list[RunSummary])
-def list_runs(runs_dir: Path = Depends(get_runs_dir)) -> list[RunSummary]:
+@app.get("/api/runs", response_model=RunListResponse)
+def list_runs(runs_dir: Path = Depends(get_runs_dir)) -> RunListResponse:
     if not runs_dir.is_dir():
-        return []
+        return RunListResponse(runs=[], damaged_runs=[])
 
     summaries: list[RunSummary] = []
+    damaged: list[DamagedRun] = []
     for entry in sorted(runs_dir.iterdir()):
         if not entry.is_dir():
             continue
+        run_id = entry.name
         status_path = entry / STATUS_FILENAME
         if not status_path.is_file():
+            # Not a run directory — skip, don't report as damaged.
+            continue
+
+        status_raw = status_path.read_text(encoding="utf-8")
+        try:
+            status_dict = json.loads(status_raw)
+        except json.JSONDecodeError:
+            damaged.append(
+                DamagedRun(
+                    run_id=run_id,
+                    reason="corrupt_status_json",
+                    message=f"status.json for run {run_id!r} is not valid JSON",
+                )
+            )
             continue
         try:
-            status = RunStatus.model_validate_json(status_path.read_text(encoding="utf-8"))
+            status = RunStatus.model_validate(status_dict)
         except ValidationError:
+            damaged.append(
+                DamagedRun(
+                    run_id=run_id,
+                    reason="invalid_status_schema",
+                    message=f"status.json for run {run_id!r} failed schema validation",
+                )
+            )
             continue
 
         ticker = None
@@ -150,19 +174,22 @@ def list_runs(runs_dir: Path = Depends(get_runs_dir)) -> list[RunSummary]:
                 )
                 ticker = manifest.ticker
                 analysis_date = manifest.analysis_date
-            except ValidationError:
+            except (ValidationError, ValueError):
+                # Corrupt or schema-invalid manifest — keep the run healthy
+                # but leave ticker/date as None (never fabricate metadata).
                 pass
 
         summaries.append(
             RunSummary(
-                run_id=entry.name,
+                run_id=run_id,
                 ticker=ticker,
                 analysis_date=analysis_date,
                 analysis_status=status.analysis_status,
                 overall_status=status.overall_status,
+                updated_at=status.updated_at,
             )
         )
-    return summaries
+    return RunListResponse(runs=summaries, damaged_runs=damaged)
 
 
 @app.get("/api/runs/{run_id}/status", response_model=RunStatus)

@@ -114,7 +114,7 @@ def test_api_routes_still_work_after_static_mount(client):
     # reaching the real endpoint). This is the regression that matters most.
     resp = client.get("/api/runs")
     assert resp.status_code == 200
-    assert resp.json() == []
+    assert resp.json() == {"runs": [], "damaged_runs": []}
 
     resp = client.get("/api/runs/DOES_NOT_EXIST/status")
     assert resp.status_code == 404

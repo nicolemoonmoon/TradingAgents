@@ -11,6 +11,8 @@ API layer, not in ``run_contract.py``.
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from pydantic import BaseModel, field_validator
 
 from tradingagents.graph.analyst_execution import ANALYST_NODE_SPECS
@@ -38,6 +40,7 @@ class RunSummary(BaseModel):
     analysis_date: str | None = None
     analysis_status: AnalysisStatus
     overall_status: OverallStatus
+    updated_at: datetime | None = None
 
 
 class StartAnalysisRequest(BaseModel):
@@ -87,3 +90,30 @@ class StartAnalysisResponse(BaseModel):
     run_id: str
     analysis_status: AnalysisStatus
     strategy_profile: StrategyProfile = None
+
+
+class DamagedRun(BaseModel):
+    """One damaged run entry in ``GET /api/runs`` (Phase 5B).
+
+    A damaged run is a directory under ``runs_dir`` that fails to parse as a
+    valid run — either ``status.json`` is corrupt JSON or schema-invalid.
+    Directories without ``status.json`` are NOT reported as damaged; they are
+    simply skipped (they may not be run directories at all).
+    """
+
+    run_id: str
+    reason: str
+    message: str
+
+
+class RunListResponse(BaseModel):
+    """Wrapper response for ``GET /api/runs`` (Phase 5B).
+
+    ``runs`` contains successfully parsed runs. ``damaged_runs`` contains
+    directories that were identified as run directories but whose
+    ``status.json`` could not be parsed — the API surfaces them rather than
+    silently dropping them, so operators can detect and repair corruption.
+    """
+
+    runs: list[RunSummary]
+    damaged_runs: list[DamagedRun] = []
