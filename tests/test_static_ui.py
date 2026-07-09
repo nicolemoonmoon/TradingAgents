@@ -482,3 +482,55 @@ def test_app_js_build_analysis_payload_uses_null_fallback_on_empty_model(client)
 
     assert "quick_model: quickValue || null" in body
     assert "deep_model: deepValue || null" in body
+
+
+# ---------------------------------------------------------------------------
+# Phase 8B: Scanner / Candidate Board in-memory logic characterization.
+# Static source-level assertions only — no JS runtime, no browser.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_app_js_parse_ticker_input_splits_trims_and_filters(client):
+    """Phase 8B: parseTickerInput splits on comma, trims whitespace, and
+    filters out empty strings — locking down the basic tokenizer contract."""
+    body = client.get("/app.js").text
+    assert ".split(" in body
+    assert ".trim()" in body
+    assert ".filter((t) => t.length > 0)" in body
+
+
+@pytest.mark.unit
+def test_app_js_add_candidates_dedup_by_uppercase_ticker(client):
+    """Phase 8B: addCandidates deduplicates by uppercase ticker — a candidate
+    already in the list (case-insensitive) is not added twice."""
+    body = client.get("/app.js").text
+    assert "toUpperCase()" in body
+    assert "if (seen.has(key)) continue" in body
+
+
+@pytest.mark.unit
+def test_app_js_scanner_send_ignores_empty_ticker_list(client):
+    """Phase 8B: the Scanner send handler checks parseTickerInput result
+    length and shows a status message instead of calling addCandidates
+    when the ticker list is empty."""
+    body = client.get("/app.js").text
+    assert "tickers.length === 0" in body
+
+
+@pytest.mark.unit
+def test_app_js_scanner_block_has_no_fetch(client):
+    """Phase 8B: the Scanner v0 block contains no fetch calls — it is a pure
+    UI placeholder that pushes tickers into the in-memory candidates array
+    only. Any future real-data integration would need to add fetch here."""
+    body = client.get("/app.js").text
+    assert "No fetch anywhere in this block" in body
+
+
+@pytest.mark.unit
+def test_index_html_has_scanner_not_connected_notice(client):
+    """Phase 8B: the Scanner tab includes a notice explaining it is not
+    connected to real market data — documents the current v0 placeholder
+    state before any Phase 8C real-data integration."""
+    body = client.get("/").text
+    assert 'id="scanner-not-connected-notice"' in body
