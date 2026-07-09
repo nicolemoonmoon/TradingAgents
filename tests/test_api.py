@@ -1000,3 +1000,140 @@ def test_partial_failure_run_appears_in_list_runs_with_failed_status(
     # failed run — must be None (the "never fabricate" rule).
     assert body[0]["ticker"] is None
     assert body[0]["analysis_date"] is None
+
+
+# ---------------------------------------------------------------------------
+# Phase 5A: persistence/index current-behavior characterization tests.
+# These lock down the current GET /api/runs discovery behavior before
+# Phase 5B's damaged-run surfacing or listing hardening work.
+# Every test here passes against the current code as-is — no xfail, no
+# roadmap, no "MUST FAIL" annotations.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_list_runs_currently_silently_drops_corrupted_status_json(client, tmp_path):
+    """Phase 5A: characterize current behavior — a run directory whose
+    status.json contains invalid JSON is silently omitted from GET /api/runs.
+    The API returns 200 with an empty list (or excludes only the bad entry).
+    This documents pre-Phase 5B behavior before damaged-run surfacing."""
+    run_dir = tmp_path / "AAPL_20260703_150000"
+    run_dir.mkdir()
+    (run_dir / "status.json").write_text("not valid json {{{", encoding="utf-8")
+
+    resp = client.get("/api/runs")
+
+    assert resp.status_code == 200
+    run_ids = [r["run_id"] for r in resp.json()]
+    assert "AAPL_20260703_150000" not in run_ids
+
+
+@pytest.mark.unit
+def test_list_runs_currently_silently_drops_schema_invalid_status_json(client, tmp_path):
+    """Phase 5A: characterize current behavior — a status.json that is valid
+    JSON but fails Pydantic schema validation (e.g., missing required fields)
+    is silently omitted. Documents pre-Phase 5B behavior."""
+    run_dir = tmp_path / "AAPL_20260703_150000"
+    run_dir.mkdir()
+    # Valid JSON but no required fields (run_id, analysis_status, etc. missing).
+    (run_dir / "status.json").write_text('{"schema_version": "1.0"}', encoding="utf-8")
+
+    resp = client.get("/api/runs")
+
+    assert resp.status_code == 200
+    run_ids = [r["run_id"] for r in resp.json()]
+    assert "AAPL_20260703_150000" not in run_ids
+
+
+@pytest.mark.unit
+def test_list_runs_corrupted_manifest_still_appears_with_null_ticker_and_date(
+    client, tmp_path
+):
+    """Phase 5A: a run with a valid status.json but a corrupted or
+    schema-invalid analysis_manifest.json still appears in GET /api/runs,
+    with ticker=None and analysis_date=None — the API never fabricates
+    manifest metadata if the manifest can't be parsed. Documents current
+    'never fabricate' behavior before any Phase 5B manifest recovery work."""
+    run_dir = tmp_path / "AAPL_20260703_150000"
+    _build_status_only_run(run_dir, analysis_status=AnalysisStatus.COMPLETED)
+    (run_dir / "analysis_manifest.json").write_text("garbage not json", encoding="utf-8")
+
+    resp = client.get("/api/runs")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body) == 1
+    assert body[0]["run_id"] == "AAPL_20260703_150000"
+    assert body[0]["ticker"] is None
+    assert body[0]["analysis_date"] is None
+    assert body[0]["analysis_status"] == "completed"
+
+
+@pytest.mark.unit
+def test_list_runs_mixed_valid_and_damaged_directories_keeps_valid_runs(
+    client, tmp_path
+):
+    """Phase 5A: when the runs directory contains a mix of valid runs,
+    directories without status.json, and directories with corrupted
+    status.json, GET /api/runs returns only the valid runs — damaged
+    entries are silently excluded. Documents current mixed-filesystem
+    behavior before any Phase 5B damaged-run surfacing."""
+    # Valid run: appears.
+    _build_status_only_run(
+        tmp_path / "AAPL_20260703_120000", analysis_status=AnalysisStatus.COMPLETED
+    )
+
+    # Directory without status.json: silently excluded.
+    stray = tmp_path / "not_a_run"
+    stray.mkdir()
+    (stray / "some_file.txt").write_text("hello", encoding="utf-8")
+
+    # Corrupted status.json: silently excluded.
+    bad = tmp_path / "TSLA_20260703_130000"
+    bad.mkdir()
+    (bad / "status.json").write_text("{{{broken json", encoding="utf-8")
+
+    resp = client.get("/api/runs")
+
+    assert resp.status_code == 200
+    run_ids = [r["run_id"] for r in resp.json()]
+    assert run_ids == ["AAPL_20260703_120000"]
+    assert "not_a_run" not in run_ids
+    assert "TSLA_20260703_130000" not in run_ids
+
+
+@pytest.mark.unit
+def test_list_runs_order_is_deterministic_by_directory_name(client, tmp_path):
+    """Phase 5A: GET /api/runs returns runs in deterministic order (sorted by
+    directory name, which is the default Path sorting in Python). Two calls
+    return the same ordering, and runs appear in lexicographic order of their
+    directory names, not insertion or modification order."""
+    _build_status_only_run(
+        tmp_path / "MSFT_20260703_120000", analysis_status=AnalysisStatus.COMPLETED
+    )
+    _build_status_only_run(
+        tmp_path / "AAPL_20260703_140000", analysis_status=AnalysisStatus.RUNNING
+    )
+    _build_status_only_run(
+        tmp_path / "GOOG_20260703_130000", analysis_status=AnalysisStatus.FAILED
+    )
+
+    resp1 = client.get("/api/runs")
+    resp2 = client.get("/api/runs")
+
+    assert resp1.status_code == 200
+    assert resp2.status_code == 200
+
+    ids1 = [r["run_id"] for r in resp1.json()]
+    ids2 = [r["run_id"] for r in resp2.json()]
+
+    # Deterministic: two calls return the same order.
+    assert ids1 == ids2
+
+    # Lexicographic by directory name:
+    # AAPL_20260703_140000 < GOOG_20260703_130000 < MSFT_20260703_120000
+    assert ids1 == [
+        "AAPL_20260703_140000",
+        "GOOG_20260703_130000",
+        "MSFT_20260703_120000",
+    ]
