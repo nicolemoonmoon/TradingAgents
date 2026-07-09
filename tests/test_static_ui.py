@@ -466,3 +466,19 @@ def test_run_view_header_has_no_legacy_dash_status_format(client):
     assert 'id="run-id-label"' in body
     assert 'id="status-label"' in body
     assert " -- status:" not in body
+
+
+# ---------------------------------------------------------------------------
+# Phase 7C: buildAnalysisPayload null-fallback regression
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_app_js_build_analysis_payload_uses_null_fallback_on_empty_model(client):
+    """Phase 7C: buildAnalysisPayload must convert empty/whitespace model
+    inputs to null (not send empty strings), so the backend schema validator
+    never sees '' for quick_model or deep_model."""
+    body = client.get("/app.js").text
+
+    assert "quick_model: quickValue || null" in body
+    assert "deep_model: deepValue || null" in body

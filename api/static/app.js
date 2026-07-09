@@ -194,12 +194,14 @@
   // entry point uses the same run settings, only the ticker differs.
   function buildAnalysisPayload(ticker) {
     const strategyProfileValue = el("strategy-profile-input").value.trim();
+    const quickValue = el("quick-model-input").value.trim();
+    const deepValue = el("deep-model-input").value.trim();
     return {
       ticker,
       analysis_date: el("analysis-date-input").value,
       selected_analysts: collectSelectedAnalysts(),
-      quick_model: el("quick-model-input").value.trim(),
-      deep_model: el("deep-model-input").value.trim(),
+      quick_model: quickValue || null,
+      deep_model: deepValue || null,
       strategy_profile: strategyProfileValue === "" ? null : strategyProfileValue,
     };
   }

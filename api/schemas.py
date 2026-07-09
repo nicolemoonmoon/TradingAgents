@@ -78,6 +78,16 @@ class StartAnalysisRequest(BaseModel):
             )
         return value
 
+    @field_validator("quick_model", "deep_model")
+    @classmethod
+    def _validate_model_not_empty(cls, value: str | None) -> str | None:
+        """Phase 7C: reject empty or whitespace-only model override strings.
+        None is allowed (meaning 'use default'). Non-empty free-form strings
+        are allowed — no provider/model allowlist exists yet."""
+        if value is not None and not value.strip():
+            raise ValueError("model override must not be empty or whitespace-only")
+        return value
+
 
 class StartAnalysisResponse(BaseModel):
     """Response of ``POST /api/runs`` -- an acceptance receipt, not a status read.

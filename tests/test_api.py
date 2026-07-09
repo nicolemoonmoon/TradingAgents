@@ -19,6 +19,7 @@ pytest.importorskip("fastapi.testclient")
 
 from fastapi import HTTPException  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
+from pydantic import ValidationError  # noqa: E402
 
 from api.config import get_clock, get_runs_dir  # noqa: E402
 from api.main import _resolve_run_dir, app  # noqa: E402
@@ -1492,32 +1493,76 @@ def test_build_graph_strategy_profile_does_not_affect_model_routing(monkeypatch)
 
 
 @pytest.mark.unit
-def test_build_graph_empty_model_string_passed_through_as_is(monkeypatch):
-    """Phase 7B: characterize current behavior — an empty string passed as
-    quick_model or deep_model is set directly on the config dict (falsy
-    Python values are not treated as 'not provided'). Documents current
-    free-form model routing before any Phase 7C validation/allowlist work."""
-    from api.main import _build_graph
+def test_start_analysis_request_rejects_empty_model_string(monkeypatch):
+    """Phase 7C: constructing StartAnalysisRequest with quick_model="" or
+    deep_model="" must raise ValidationError — empty strings are no longer
+    silently passed through (Phase 7B characterized the old behavior; Phase 7C
+    replaces it with explicit rejection)."""
     from api.schemas import StartAnalysisRequest
 
-    captured = []
+    with pytest.raises(ValidationError):
+        StartAnalysisRequest(
+            ticker="AAPL",
+            analysis_date="2026-07-03",
+            quick_model="",
+        )
 
-    def fake_graph(selected_analysts, config, debug):
-        captured.append(dict(config))
-        return _CapturingFakeGraph(selected_analysts, config, debug)
+    with pytest.raises(ValidationError):
+        StartAnalysisRequest(
+            ticker="AAPL",
+            analysis_date="2026-07-03",
+            deep_model="",
+        )
 
-    monkeypatch.setattr("api.main.TradingAgentsGraph", fake_graph)
+
+@pytest.mark.unit
+def test_start_analysis_request_rejects_whitespace_only_model(monkeypatch):
+    """Phase 7C: whitespace-only model strings (\"   \", \"\\t\", etc.) are
+    rejected the same as empty strings."""
+    from api.schemas import StartAnalysisRequest
+
+    with pytest.raises(ValidationError):
+        StartAnalysisRequest(
+            ticker="AAPL",
+            analysis_date="2026-07-03",
+            quick_model="   ",
+        )
+
+    with pytest.raises(ValidationError):
+        StartAnalysisRequest(
+            ticker="AAPL",
+            analysis_date="2026-07-03",
+            deep_model="\t\n",
+        )
+
+
+@pytest.mark.unit
+def test_start_analysis_request_allows_none_model(monkeypatch):
+    """Phase 7C: quick_model=None and deep_model=None are allowed —
+    they mean 'use the default'."""
+    from api.schemas import StartAnalysisRequest
 
     request = StartAnalysisRequest(
         ticker="AAPL",
         analysis_date="2026-07-03",
-        quick_model="",
-        deep_model="",
+        quick_model=None,
+        deep_model=None,
     )
-    _build_graph(request)
+    assert request.quick_model is None
+    assert request.deep_model is None
 
-    config = captured[0]
-    # Empty strings are falsy — the current _build_graph only sets the key
-    # when request.quick_model is truthy, so these should remain at default.
-    assert config["quick_think_llm"] != ""
-    assert config["deep_think_llm"] != ""
+
+@pytest.mark.unit
+def test_start_analysis_request_allows_non_empty_free_form_model(monkeypatch):
+    """Phase 7C: any non-empty, non-whitespace string is accepted as a model
+    override — no provider/model allowlist exists yet to reject unknown IDs."""
+    from api.schemas import StartAnalysisRequest
+
+    request = StartAnalysisRequest(
+        ticker="AAPL",
+        analysis_date="2026-07-03",
+        quick_model="some-arbitrary-model-id",
+        deep_model="gpt-5.5",
+    )
+    assert request.quick_model == "some-arbitrary-model-id"
+    assert request.deep_model == "gpt-5.5"
