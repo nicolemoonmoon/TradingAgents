@@ -34,6 +34,7 @@ from tradingagents.run_contract import (  # noqa: E402
     AnalysisManifest,
     AnalysisStatus,
     EventType,
+    OverallStatus,
     ReviewStatus,
     RunEvent,
     RunStatus,
@@ -811,3 +812,191 @@ def test_post_runs_strategy_profile_does_not_change_build_graph_arguments(client
     assert calls[0].asset_type == calls[1].asset_type
     assert calls[0].strategy_profile is None
     assert calls[1].strategy_profile == "pradeep_v1"
+
+
+# ---------------------------------------------------------------------------
+# Phase 4B: cancelled status lifecycle invariants in the API layer
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_list_runs_includes_cancelled_run(client, tmp_path):
+    """Phase 4B: a run with analysis_status=cancelled must appear in
+    GET /api/runs with the correct status, and with ticker=None/analysis_date=None
+    (no manifest exists to supply them)."""
+    _build_status_only_run(
+        tmp_path / "AAPL_20260703_140000", analysis_status=AnalysisStatus.CANCELLED
+    )
+
+    resp = client.get("/api/runs")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body) == 1
+    assert body[0]["run_id"] == "AAPL_20260703_140000"
+    assert body[0]["ticker"] is None
+    assert body[0]["analysis_date"] is None
+    assert body[0]["analysis_status"] == "cancelled"
+    assert body[0]["overall_status"] == "analysis_cancelled"
+
+
+@pytest.mark.unit
+def test_get_status_returns_cancelled(client, tmp_path):
+    """Phase 4B: GET /api/runs/{id}/status must return cancelled analysis_status
+    with the correct derived overall_status."""
+    _build_status_only_run(
+        tmp_path / "AAPL_20260703_140000", analysis_status=AnalysisStatus.CANCELLED
+    )
+
+    resp = client.get("/api/runs/AAPL_20260703_140000/status")
+
+    assert resp.status_code == 200
+    assert resp.json()["analysis_status"] == "cancelled"
+    assert resp.json()["overall_status"] == "analysis_cancelled"
+
+
+@pytest.mark.unit
+def test_get_manifest_404_for_cancelled_run(client, tmp_path):
+    """Phase 4B: a cancelled run has no manifest (same as a failed run) —
+    GET /api/runs/{id}/manifest must return 404."""
+    _build_status_only_run(
+        tmp_path / "AAPL_20260703_140000", analysis_status=AnalysisStatus.CANCELLED
+    )
+
+    resp = client.get("/api/runs/AAPL_20260703_140000/manifest")
+
+    assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Phase 4B: failed/cancelled manifest 404 message contract
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_manifest_404_message_for_failed_run_is_user_readable(client, tmp_path):
+    """Phase 4B: the 404 detail for a manifest on a failed run must explain
+    WHY it's not available, not just say 'not found'."""
+    _build_status_only_run(
+        tmp_path / "AAPL_20260703_140000", analysis_status=AnalysisStatus.FAILED
+    )
+
+    resp = client.get("/api/runs/AAPL_20260703_140000/manifest")
+
+    assert resp.status_code == 404
+    detail = resp.json()["detail"]
+    assert "not available" in detail
+    assert "AAPL_20260703_140000" in detail
+
+
+@pytest.mark.unit
+def test_manifest_404_message_for_cancelled_run_is_user_readable(client, tmp_path):
+    """Phase 4B: same contract as the failed case — the detail must explain
+    why the manifest isn't available for a cancelled run."""
+    _build_status_only_run(
+        tmp_path / "AAPL_20260703_140000", analysis_status=AnalysisStatus.CANCELLED
+    )
+
+    resp = client.get("/api/runs/AAPL_20260703_140000/manifest")
+
+    assert resp.status_code == 404
+    detail = resp.json()["detail"]
+    assert "not available" in detail
+
+
+# ---------------------------------------------------------------------------
+# Phase 4B: partial-failure report accessibility
+# ---------------------------------------------------------------------------
+
+
+_PARTIAL_FINAL_STATE = {
+    "market_report": "Market analysis text.",
+    "fundamentals_report": "Fundamentals analysis text.",
+    # Deliberately omit news_report, sentiment_report, investment_debate_state,
+    # trader_investment_plan, risk_debate_state — this simulates a run that
+    # failed partway through the graph before later agents produced output.
+}
+
+
+@pytest.mark.unit
+def test_report_sections_accessible_after_partial_failure(client, tmp_path):
+    """Phase 4B: when a run fails mid-stream, report files already written by
+    save_reports() before the failure must remain accessible via the GET
+    reports endpoint — the API must not require a completed status or manifest
+    to serve files that exist on disk."""
+    run_id = "AAPL_20260703_140000"
+    run_dir = tmp_path / run_id
+
+    # Step 1: write a FAILED status (simulating failure after partial output).
+    _build_status_only_run(run_dir, analysis_status=AnalysisStatus.FAILED)
+
+    # Step 2: write the partial report tree (only market + fundamentals).
+    write_report_tree(_PARTIAL_FINAL_STATE, "AAPL", run_dir)
+
+    # Step 3: verify accessible sections return 200.
+    market_resp = client.get(f"/api/runs/{run_id}/reports/market")
+    assert market_resp.status_code == 200
+    assert market_resp.text == "Market analysis text."
+
+    fundamentals_resp = client.get(f"/api/runs/{run_id}/reports/fundamentals")
+    assert fundamentals_resp.status_code == 200
+    assert fundamentals_resp.text == "Fundamentals analysis text."
+
+    # Step 4: verify unwritten sections return 404, not 500.
+    sentiment_resp = client.get(f"/api/runs/{run_id}/reports/sentiment")
+    assert sentiment_resp.status_code == 404
+
+    # Step 5: manifest must still be 404 (never written for a failed run).
+    manifest_resp = client.get(f"/api/runs/{run_id}/manifest")
+    assert manifest_resp.status_code == 404
+
+
+@pytest.mark.unit
+def test_partial_failure_report_complete_report_includes_only_written_sections(
+    client, tmp_path
+):
+    """Phase 4B: the complete_report.md written by save_reports() during a
+    partial run must contain only the sections that actually produced output,
+    and must be served successfully by the API."""
+    run_id = "AAPL_20260703_140000"
+    run_dir = tmp_path / run_id
+
+    _build_status_only_run(run_dir, analysis_status=AnalysisStatus.FAILED)
+    write_report_tree(_PARTIAL_FINAL_STATE, "AAPL", run_dir)
+
+    resp = client.get(f"/api/runs/{run_id}/reports/complete_report")
+
+    assert resp.status_code == 200
+    body = resp.text
+    assert "Market Analyst" in body
+    assert "Fundamentals Analyst" in body
+    assert "Market analysis text." in body
+    assert "Fundamentals analysis text." in body
+    # These agents produced no output and must not appear.
+    assert "Sentiment" not in body
+    assert "Trader" not in body
+
+
+@pytest.mark.unit
+def test_partial_failure_run_appears_in_list_runs_with_failed_status(
+    client, tmp_path
+):
+    """Phase 4B: a partially-failed run must appear in GET /api/runs with
+    analysis_status=failed, even though some report files exist on disk."""
+    run_id = "AAPL_20260703_140000"
+    run_dir = tmp_path / run_id
+
+    _build_status_only_run(run_dir, analysis_status=AnalysisStatus.FAILED)
+    write_report_tree(_PARTIAL_FINAL_STATE, "AAPL", run_dir)
+
+    resp = client.get("/api/runs")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body) == 1
+    assert body[0]["run_id"] == run_id
+    assert body[0]["analysis_status"] == "failed"
+    # ticker/analysis_date come from manifest, which doesn't exist for a
+    # failed run — must be None (the "never fabricate" rule).
+    assert body[0]["ticker"] is None
+    assert body[0]["analysis_date"] is None

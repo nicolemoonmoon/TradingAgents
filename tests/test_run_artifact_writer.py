@@ -229,3 +229,21 @@ def test_append_run_event_creates_file_and_parent_dir_when_missing(tmp_path):
     assert out == run_dir / "events.jsonl"
     assert out.exists()
     assert len(out.read_text(encoding="utf-8").splitlines()) == 1
+
+
+# ---------------------------------------------------------------------------
+# Phase 4B: cancelled status round-trip through atomic write
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_write_run_status_cancelled_round_trips(tmp_path):
+    """Phase 4B: writing a cancelled analysis_status to status.json and reading
+    it back must preserve the exact cancelled state and derived overall_status."""
+    write_run_status(tmp_path, _status(analysis_status=AnalysisStatus.CANCELLED))
+
+    target = tmp_path / STATUS_FILENAME
+    round_tripped = RunStatus.model_validate_json(target.read_text(encoding="utf-8"))
+    assert round_tripped.analysis_status == AnalysisStatus.CANCELLED
+    assert round_tripped.overall_status == OverallStatus.ANALYSIS_CANCELLED
+    assert round_tripped.review_status == ReviewStatus.NOT_REQUESTED

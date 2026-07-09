@@ -339,6 +339,55 @@ def test_run_status_run_id_rejects_unsafe_characters():
 
 
 # ---------------------------------------------------------------------------
+# Phase 4B: cancelled status lifecycle invariants
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_run_status_accepts_cancelled_analysis_status():
+    """Phase 4B: cancelled is a valid AnalysisStatus — constructing a RunStatus
+    with it must succeed and derive ANALYSIS_CANCELLED overall_status."""
+    status = RunStatus(
+        **_status_dict(
+            analysis_status="cancelled",
+            overall_status="analysis_cancelled",
+        )
+    )
+    assert status.analysis_status == AnalysisStatus.CANCELLED
+    assert status.overall_status == OverallStatus.ANALYSIS_CANCELLED
+
+
+@pytest.mark.unit
+def test_run_status_cancelled_with_review_not_requested_is_valid():
+    """Phase 4B: the only valid review_status for a cancelled analysis is
+    not_requested — verify the derivation doesn't raise."""
+    status = RunStatus(
+        **_status_dict(
+            analysis_status="cancelled",
+            review_status="not_requested",
+            overall_status="analysis_cancelled",
+        )
+    )
+    assert status.analysis_status == AnalysisStatus.CANCELLED
+    assert status.review_status == ReviewStatus.NOT_REQUESTED
+    assert status.overall_status == OverallStatus.ANALYSIS_CANCELLED
+
+
+@pytest.mark.unit
+def test_run_status_cancelled_rejects_inconsistent_review_status():
+    """Phase 4B: a cancelled analysis with any review_status other than
+    not_requested is an invalid state machine combination and must raise."""
+    with pytest.raises(ValidationError):
+        RunStatus(
+            **_status_dict(
+                analysis_status="cancelled",
+                review_status="queued",
+                overall_status="analysis_cancelled",
+            )
+        )
+
+
+# ---------------------------------------------------------------------------
 # RunEvent
 # ---------------------------------------------------------------------------
 
