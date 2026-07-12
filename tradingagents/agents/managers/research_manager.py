@@ -11,6 +11,7 @@ from tradingagents.agents.utils.structured import (
     bind_structured,
     invoke_structured_or_freetext,
 )
+from tradingagents.default_config import get_active_prompt_grounding
 
 
 def create_research_manager(llm):
@@ -22,7 +23,13 @@ def create_research_manager(llm):
 
         investment_debate_state = state["investment_debate_state"]
 
-        prompt = f"""As the Research Manager and debate facilitator, your role is to critically evaluate this round of debate and deliver a clear, actionable investment plan for the trader.
+        # Phase 10B.1: Stockbee prompt grounding — prepend if active
+        grounding_prefix = ""
+        active = get_active_prompt_grounding()
+        if active:
+            grounding_prefix = active + "\n\n---\n\n"
+
+        prompt = grounding_prefix + f"""As the Research Manager and debate facilitator, your role is to critically evaluate this round of debate and deliver a clear, actionable investment plan for the trader.
 
 {instrument_context}
 

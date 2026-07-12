@@ -7,6 +7,7 @@ from tradingagents.agents.utils.agent_utils import (
     get_stock_data,
     get_verified_market_snapshot,
 )
+from tradingagents.default_config import get_active_prompt_grounding
 
 
 def create_market_analyst(llm):
@@ -21,8 +22,15 @@ def create_market_analyst(llm):
             get_verified_market_snapshot,
         ]
 
+        # Phase 10B.1: Stockbee prompt grounding — prepend if active
+        grounding_prefix = ""
+        active = get_active_prompt_grounding()
+        if active:
+            grounding_prefix = active + "\n\n---\n\n"
+
         system_message = (
-            """You are a trading assistant tasked with analyzing financial markets. Your role is to select the **most relevant indicators** for a given market condition or trading strategy from the following list. The goal is to choose up to **8 indicators** that provide complementary insights without redundancy. Categories and each category's indicators are:
+            grounding_prefix
+            + """You are a trading assistant tasked with analyzing financial markets. Your role is to select the **most relevant indicators** for a given market condition or trading strategy from the following list. The goal is to choose up to **8 indicators** that provide complementary insights without redundancy. Categories and each category's indicators are:
 
 Moving Averages:
 - close_50_sma: 50 SMA: A medium-term trend indicator. Usage: Identify trend direction and serve as dynamic support/resistance. Tips: It lags price; combine with faster indicators for timely signals.

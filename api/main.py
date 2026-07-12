@@ -65,7 +65,7 @@ from pydantic import ValidationError
 from api.config import get_clock, get_runs_dir
 from api.schemas import DamagedRun, RunListResponse, RunSummary, StartAnalysisRequest, StartAnalysisResponse
 from tradingagents.dataflows.utils import safe_ticker_component
-from tradingagents.default_config import DEFAULT_CONFIG
+from tradingagents.default_config import DEFAULT_CONFIG, get_stockbee_grounding, set_active_prompt_grounding
 from tradingagents.graph.trading_graph import TradingAgentsGraph
 from tradingagents.run_artifact_writer import (
     ArtifactPathError,
@@ -271,6 +271,19 @@ def _build_graph(request: StartAnalysisRequest) -> TradingAgentsGraph:
         config["quick_think_llm"] = request.quick_model
     if request.deep_model:
         config["deep_think_llm"] = request.deep_model
+
+    # Phase 10B.1: Stockbee prompt grounding. Feature-gated — only
+    # activates when strategy_profile is an explicitly known Stockbee
+    # profile. Unknown profiles and None → no grounding.
+    # Reset on every call so stale grounding from a previous profile
+    # never leaks into the default path.
+    set_active_prompt_grounding(None)
+    if request.strategy_profile:
+        grounding = get_stockbee_grounding(request.strategy_profile)
+        if grounding:
+            config["prompt_grounding"] = grounding
+            set_active_prompt_grounding(grounding)
+
     selected_analysts = request.selected_analysts or ("market", "social", "news", "fundamentals")
     return TradingAgentsGraph(selected_analysts=selected_analysts, config=config, debug=False)
 
