@@ -1,0 +1,82 @@
+{
+  "expected_binding_sha256": "9704d3b99806644896e133e49b1cbd8096cb7a1f70d2ae799526840ab2e331e1",
+  "pointer": {
+    "binding": {
+      "activation_eligible": true,
+      "all_components_resolved": true,
+      "binding_id": "tradingagents:active-governance-binding:v1.0.0",
+      "binding_revision": 2,
+      "binding_status": "ACTIVE",
+      "components": [
+        {
+          "component_id": "global:governance-foundation:v1.0.0",
+          "component_role": "GLOBAL_FOUNDATION",
+          "resolution_status": "RESOLVED",
+          "sha256": "6bbf36be2a201803fd91e031c7b67151b5261f752ea4d5ea96a11cdb8452a09b",
+          "version": "1.0.0-candidate.7"
+        },
+        {
+          "component_id": "global:harness-core:v1.0.0",
+          "component_role": "HARNESS_CORE",
+          "resolution_status": "RESOLVED",
+          "sha256": "0f78ead8cfe4662c3ba7dfc112a61951f3f516fc505427d2d85855911539fba3",
+          "version": "1.0.0"
+        },
+        {
+          "component_id": "global:harness-interface:v1.0.0",
+          "component_role": "GLOBAL_INTERFACE",
+          "resolution_status": "RESOLVED",
+          "sha256": "28fe91cf29c929746e8af95d4d7e709a549d223e1349983688828fbebc2a82cf",
+          "version": "1.0.0"
+        },
+        {
+          "component_id": "tradingagents:governance-overlay:v1.0.0",
+          "component_role": "PROJECT_OVERLAY",
+          "resolution_status": "RESOLVED",
+          "sha256": "11373cd8e0891b264beb8e29a5984e5f1730746ab52caee4cc764def058b35e8",
+          "version": "1.0.0"
+        },
+        {
+          "component_id": "tradingagents:project-profile:v1.0.0",
+          "component_role": "PROJECT_PROFILE",
+          "resolution_status": "RESOLVED",
+          "sha256": "85c05bda5e2b628b47760d4e16afb1617d55773caa94a105e394a4d0e45c34f7",
+          "version": "1.0.0"
+        },
+        {
+          "component_id": "tradingagents:project-adapter:v1.0.0",
+          "component_role": "PROJECT_ADAPTER",
+          "resolution_status": "RESOLVED",
+          "sha256": "d015b033fc5b4e05c70217e88cff7b1c9f18f73a976ea1ae00f4b62c8929df91",
+          "version": "1.0.0"
+        },
+        {
+          "component_id": "tradingagents:phase-plan:v1.0.0",
+          "component_role": "PHASE_PLAN",
+          "resolution_status": "RESOLVED",
+          "sha256": "b99aff2faa1373b867036d112ae2e22e3d70cfa278fd15a0237c67cf80a222fd",
+          "version": "1.0.0"
+        },
+        {
+          "component_id": "tradingagents:compatibility-suite:v1.0.0",
+          "component_role": "COMPATIBILITY_SUITE",
+          "resolution_status": "RESOLVED",
+          "sha256": "56fc90e932466b5a799a924f2345eaba6bc26cbcb4d273abb6ded19a8ce27fad",
+          "version": "1.0.0"
+        }
+      ],
+      "other_project_write_allowed": false,
+      "project_id": "tradingagents",
+      "write_scope": [
+        "tradingagents"
+      ]
+    },
+    "binding_sha256": "9704d3b99806644896e133e49b1cbd8096cb7a1f70d2ae799526840ab2e331e1",
+    "project_id": "TRADINGAGENTS",
+    "revision": 3
+  },
+  "pointer_path": "/Users/nicolemoonmoon/ClaudeWork/global-harness-runtime/runtime/activation-transactions/laneb-tradingagents-activation-9704d3b998066448-06d060c05e7e/projects/TRADINGAGENTS/current-pointer.json",
+  "result": "PASS",
+  "stable_harness_entrypoint": "/Users/nicolemoonmoon/ClaudeWork/harness-current",
+  "transaction_root": "/Users/nicolemoonmoon/ClaudeWork/global-harness-runtime/runtime/activation-transactions/laneb-tradingagents-activation-9704d3b998066448-06d060c05e7e"
+}

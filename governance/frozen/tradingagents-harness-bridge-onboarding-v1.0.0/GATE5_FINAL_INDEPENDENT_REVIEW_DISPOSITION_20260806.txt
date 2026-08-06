@@ -1,0 +1,39 @@
+LANEB TRADINGAGENTS GATE 5 FINAL INDEPENDENT REVIEW DISPOSITION
+
+RESULT=PASS
+GATE=5
+BATCH=4
+EVIDENCE_ZIP_SHA256=776d8a743572bde8128a2902b62c0de3a4645cd88135c5fbb8cc2bb4f64df088
+EVIDENCE_ZIP_INTEGRITY=PASS
+INTERNAL_SHA256=PASS
+TRANSACTION_REQUEST_CANONICAL_SHA256=cc72563f718e12add3cd648e0b0a834e6f23f682138a8434d90addd2b66187cf
+CANDIDATE7_DRY_RUN_DECISION=COMMIT_ALL
+DRY_RUN_REPORT_SHA256=87442a0fc0f696f99fdeaee2e94ca2c530ab2ac8b5584f790f7dd77909f4b909
+DRY_RUN_REPORT_HASH_MATCH=true
+TARGET_PRESTATE=ABSENT
+TARGET_POSTSTATE=ABSENT
+PROJECT_MUTATION=false
+GIT_MUTATION=false
+HARNESS_MUTATION=false
+SOURCE_TRANSACTION_MUTATION=false
+
+APPROVAL_EFFECTS:
+- ECOMMERCE pointer revision 1 -> 2.
+- ECOMMERCE binding SHA-256 remains 3d11a23d75c19eba85d539c070cedd764e32c1d0542b8b254c41edfb71d4ed49.
+- TRADINGAGENTS pointer revision 1 -> 2.
+- TRADINGAGENTS binding SHA-256 changes from 620459adaedd82ca63c9b3497a85f7f68f6d9f2079492139e5bc555b3447299e to 36cac7bf3a98d8b72e821c5fe05ce68178337719a7f72fc24ad4c8aa9d4bad42.
+- TRADINGAGENTS remains RENDERED_CANDIDATE with activation_eligible=false immediately after the transaction.
+- Gate 6 must complete authority rebind, read-only proof, deny proof, controlled-write proof, recovery proof, activation, and current-pointer readback before onboarding is active.
+
+SOURCE_TRANSACTION_ROOT=/Users/nicolemoonmoon/ClaudeWork/global-harness-runtime/runtime/activation-transactions/candidate7-initial-activation
+TARGET_TRANSACTION_ROOT=/Users/nicolemoonmoon/ClaudeWork/global-harness-runtime/runtime/activation-transactions/laneb-tradingagents-onboarding-36cac7bf3a98d8b7-06d060c05e7e
+IDEMPOTENCY_KEY=laneb-tradingagents-onboarding-36cac7bf3a98d8b7-06d060c05e7e
+CURRENT_FENCING_TOKEN=1
+REQUEST_FENCING_TOKEN=2
+
+FROZEN_PLAN_MODIFIED=false
+CANDIDATE7_MODIFIED=false
+NEW_WORKFLOW_STEP=false
+NEW_AUDIT_LAYER=false
+MUTATION_AUTHORIZED=false
+EXPLICIT_OWNER_APPROVAL_REQUIRED=true

@@ -1,0 +1,15 @@
+{
+  "appended_count": 6,
+  "ledger_sha256": "4cf51d30bb3ce0c6b3766d3e8cac782fae4c7e4eadfa099552697a1c006aae22",
+  "record_count": 6,
+  "result": "PASS",
+  "sequences": [
+    11,
+    12,
+    13,
+    14,
+    15,
+    16
+  ],
+  "state": "APPENDED"
+}
