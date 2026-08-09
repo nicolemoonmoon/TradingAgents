@@ -159,51 +159,16 @@ DEFAULT_CONFIG = _apply_env_overrides({
 })
 
 # ---------------------------------------------------------------------------
-# Phase 10B.1: Stockbee prompt grounding
+# Phase 10B.1: Stockbee prompt grounding — frozen KB retrieval
 # ---------------------------------------------------------------------------
 
-STOCKBEE_PROMPT_GROUNDING = {
-    "stockbee_momentum_burst": (
-        "STOCKBEE MOMENTUM BURST CONTEXT\n\n"
-        "You are evaluating this stock for a potential Momentum Burst setup. "
-        "Key criteria: (1) Has the stock shown a range expansion — a wide-range, "
-        "high-volume day — after 4-5 days of weakness or flat action? "
-        "(2) Is today day 1 of the potential swing move? Entries on day 3+ are "
-        "low-probability per Stockbee methodology. "
-        "(3) Does volume confirm the range expansion (above 1.5x 20-day average)? "
-        "(4) What is the 3-10 day upside potential? "
-        "(5) You do NOT need a specific catalyst for this setup — momentum bursts "
-        "are pattern-and-probability based.\n\n"
-        "TRADING RULES: Buy on the range expansion day. Exit during the explosive "
-        "phase — after 3-10 days, stocks typically give back burst gains. "
-        "Cut losses ruthlessly if the trade does not follow through immediately. "
-        "This is a 200-1000 trades/year compounding strategy with 5-20% per-trade targets."
-    ),
-    "stockbee_episodic_pivot": (
-        "STOCKBEE EPISODIC PIVOT CONTEXT\n\n"
-        "You are evaluating whether this stock's recent earnings constitutes an "
-        "Episodic Pivot (EP). Key criteria: (1) How surprising was the earnings "
-        "report versus consensus? (2) Was the stock neglected for months/years "
-        "prior — low volume, flat/declining price? (3) Pre-market reaction: "
-        "gap-up magnitude and volume >50k shares? (4) Is this at the beginning "
-        "of a new market rally?\n\n"
-        "TRADING RULES: Best EPs are on low-priced, deeply neglected stocks — "
-        "moves of 100-500%+ in weeks/months are possible. Position size for "
-        "15-20% account growth per trade. Only 1-12 EP opportunities appear "
-        "per year — be extremely selective. Most earnings reports produce day "
-        "trades, not EPs."
-    ),
-}
+from collections.abc import Mapping  # noqa: E402
+from contextvars import ContextVar  # noqa: E402
 
-# ---------------------------------------------------------------------------
-# Phase 10B.1: Stockbee prompt grounding — ContextVar-backed getter/setter.
-#
-# Phase 10B.1 is a minimal feature-gated experiment. This does not provide
-# full graph-instance isolation. If concurrent graph execution is needed,
-# move grounding into graph/config threading in a later protected-file review.
-# ---------------------------------------------------------------------------
-
-from contextvars import ContextVar  # noqa: E402 (Phase 10B.1; stdlib since 3.7)
+from tradingagents.knowledge.stockbee_retrieval import (  # noqa: E402
+    SUPPORTED_PROFILES as _SUPPORTED_STOCKBEE_PROFILES,
+    get_stockbee_grounding_text as _get_stockbee_grounding_text,
+)
 
 _active_prompt_grounding_var: ContextVar[str | None] = ContextVar(
     "active_prompt_grounding", default=None
@@ -211,29 +176,45 @@ _active_prompt_grounding_var: ContextVar[str | None] = ContextVar(
 
 
 def set_active_prompt_grounding(value: str | None) -> None:
-    """Set the active prompt grounding text. Call at graph construction time.
-
-    Phase 10B.1: called from _build_graph() in api/main.py.
-    Call with None to reset.
-    """
+    """Set active prompt grounding for the current execution context."""
     _active_prompt_grounding_var.set(value)
 
 
 def get_active_prompt_grounding() -> str | None:
-    """Return the active prompt grounding text, or None.
-
-    Phase 10B.1: called by agent prompt-construction functions at runtime.
-    Only non-None when a known Stockbee strategy_profile is active.
-    """
+    """Return active prompt grounding, or ``None``."""
     return _active_prompt_grounding_var.get()
 
 
 def get_stockbee_grounding(strategy_profile: str | None) -> str | None:
-    """Return prompt grounding text for a known Stockbee profile, or None.
+    """Return deterministic grounding from the frozen external Stockbee KB.
 
-    Phase 10B.1: feature-gated behind strategy_profile selection.
-    Unknown profiles and None return None — no grounding injected.
+    ``None`` and unknown profiles remain backward-compatible and return
+    ``None``. Known profiles fail closed when the frozen KB integrity checks
+    fail; stale hard-coded methodology is never used as a fallback.
     """
-    if strategy_profile is None:
-        return None
-    return STOCKBEE_PROMPT_GROUNDING.get(strategy_profile)
+    return _get_stockbee_grounding_text(strategy_profile)
+
+
+class _StockbeeGroundingCompatibilityView(Mapping):
+    """Read-only compatibility view for callers of the former constant.
+
+    Values are resolved from the frozen KB at access time. No methodology text
+    is hard-coded in this module.
+    """
+
+    def __getitem__(self, key):
+        if key not in _SUPPORTED_STOCKBEE_PROFILES:
+            raise KeyError(key)
+        value = get_stockbee_grounding(key)
+        if value is None:
+            raise KeyError(key)
+        return value
+
+    def __iter__(self):
+        return iter(_SUPPORTED_STOCKBEE_PROFILES)
+
+    def __len__(self):
+        return len(_SUPPORTED_STOCKBEE_PROFILES)
+
+
+STOCKBEE_PROMPT_GROUNDING = _StockbeeGroundingCompatibilityView()

@@ -1,6 +1,10 @@
 """Phase 10B.1: Stockbee prompt grounding unit tests.
 No provider calls. No server. No POST /api/runs.
 """
+import hashlib
+import json
+from pathlib import Path
+
 import pytest
 
 from tradingagents.default_config import (
@@ -11,6 +15,77 @@ from tradingagents.default_config import (
 )
 
 SENTINEL = "SENTINEL_STOCKBEE_GROUNDING_12345"
+
+
+@pytest.fixture(autouse=True)
+def synthetic_stockbee_kb(tmp_path, monkeypatch):
+    """Every test uses a synthetic frozen KB; never the owner home directory."""
+    from tradingagents.knowledge import stockbee_retrieval as retrieval
+
+    root = tmp_path / "pradeep_stockbee"
+    files = {
+        "wiki/setups/momentum_burst.md": (
+            "# Momentum Burst\n"
+            "range expansion; follow-through; 3-10 days; 200-1000 trades/year.\n"
+            "[MB source](../source_notes/mb.md)\n"
+        ),
+        "wiki/concepts/entry_mechanics.md": "# Entry Mechanics\nfirst-day entry and stop geometry.\n",
+        "wiki/concepts/risk_control.md": "# Risk Control\nrisk, stop, sizing, situational awareness.\n",
+        "wiki/process/swing_trading_process.md": "# Swing Process\nrepeatable process and review.\n",
+        "wiki/process/watchlist_building.md": "# Watchlist\nprepare and prioritize before the session.\n",
+        "wiki/setups/episodic_pivots.md": (
+            "# Episodic Pivot\n"
+            "episodic pivot; neglect; pre-market catalyst; 100-500% historical methodology context.\n"
+            "[EP source](../source_notes/ep.md)\n"
+        ),
+        "wiki/setups/magna.md": "# MAGNA53\nacceleration + gap + neglect quality filter.\n",
+        "wiki/setups/ep_9_million.md": (
+            "# EP 9 Million\nseparate Episodic Pivot variation; not Simple 9.\n"
+            "[P1 source](../source_notes/p1.md)\n"
+        ),
+        "wiki/concepts/anticipation.md": "# Anticipation\nentry before breakout confirmation changes risk geometry.\n",
+        "wiki/concepts/setup_design.md": "# Setup Design\ncomplete setup includes scan, entry, stop, exit, sizing.\n",
+        "wiki/source_notes/mb.md": "Source https://stockbee.blogspot.com/2014/08/momentum-source.html\n",
+        "wiki/source_notes/ep.md": "Source https://stockbee.blogspot.com/2014/09/ep-source.html\n",
+        "wiki/source_notes/p1.md": "Video https://www.youtube.com/watch?v=abcdefghijk\n",
+    }
+    for rel, text in files.items():
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+
+    raw = root / "raw/blog_text/secret.txt"
+    raw.parent.mkdir(parents=True, exist_ok=True)
+    raw.write_text("RAW_CORPUS_SENTINEL_MUST_NOT_APPEAR", encoding="utf-8")
+
+    rows = []
+    for rel in sorted(files):
+        path = root / rel
+        rows.append({
+            "path": rel,
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            "size_bytes": path.stat().st_size,
+        })
+    inventory = {"schema_version": "1.0.0", "root": str(root), "file_count": len(rows), "files": rows}
+    inventory_path = root / "manifests/batch6_phase9_v1_inventory.json"
+    inventory_path.parent.mkdir(parents=True, exist_ok=True)
+    inventory_path.write_text(json.dumps(inventory, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+    inventory_sha = hashlib.sha256(inventory_path.read_bytes()).hexdigest()
+    monkeypatch.setattr(retrieval, "EXPECTED_KB_INVENTORY_SHA256", inventory_sha)
+    closure = {
+        "batch_status": "CLOSED",
+        "phase9_v1_status": "COMPLETE_WITH_DECLARED_SOURCE_GAP",
+        "simple9_active_search_policy": "STOP",
+        "simple9_reopen_condition_ids": list(retrieval.EXPECTED_SIMPLE9_REOPEN_CONDITION_IDS),
+        "permanent_data_exclusions": list(retrieval.EXPECTED_PERMANENT_DATA_EXCLUSIONS),
+        "inventory_sha256": inventory_sha,
+        "inventory_file_count": len(rows),
+    }
+    (root / "manifests/batch6_phase9_v1_closure.json").write_text(
+        json.dumps(closure, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(retrieval, "DEFAULT_KB_ROOT", root)
+    return root
 
 
 # ---------------------------------------------------------------------------
@@ -52,6 +127,119 @@ class TestStockbeeGroundingContent:
         text = STOCKBEE_PROMPT_GROUNDING["stockbee_episodic_pivot"]
         for term in ["episodic pivot", "neglect", "pre-market", "100-500%"]:
             assert term.lower() in text.lower(), f"missing: {term}"
+
+
+# ---------------------------------------------------------------------------
+# Frozen-KB retrieval tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+def test_retrieval_preserves_original_source_urls(synthetic_stockbee_kb):
+    from tradingagents.knowledge.stockbee_retrieval import retrieve_stockbee_grounding
+    mb = retrieve_stockbee_grounding("stockbee_momentum_burst")
+    ep = retrieve_stockbee_grounding("stockbee_episodic_pivot")
+    assert "https://stockbee.blogspot.com/2014/08/momentum-source.html" in mb.source_urls
+    assert "https://stockbee.blogspot.com/2014/09/ep-source.html" in ep.source_urls
+    assert "https://www.youtube.com/watch?v=abcdefghijk" in ep.source_urls
+
+
+@pytest.mark.unit
+def test_retrieval_binds_inventory_and_context_ids():
+    from tradingagents.knowledge.stockbee_retrieval import retrieve_stockbee_grounding
+    bundle = retrieve_stockbee_grounding("stockbee_episodic_pivot")
+    assert bundle.knowledge_inventory_sha256 in bundle.grounding_text
+    assert bundle.context_ids[0] == "wiki/setups/episodic_pivots.md"
+    assert "wiki/setups/ep_9_million.md" in bundle.context_ids
+    assert "wiki/setups/simple_9.md" not in bundle.context_ids
+    assert "do not synthesize" in bundle.grounding_text.lower()
+
+
+@pytest.mark.unit
+def test_retrieval_is_deterministic_and_bounded():
+    from tradingagents.knowledge.stockbee_retrieval import retrieve_stockbee_grounding
+    first = retrieve_stockbee_grounding("stockbee_episodic_pivot")
+    second = retrieve_stockbee_grounding("stockbee_episodic_pivot")
+    assert first == second
+    assert len(first.grounding_text) <= 12000
+
+
+@pytest.mark.unit
+def test_runtime_does_not_use_raw_corpus():
+    from tradingagents.knowledge.stockbee_retrieval import retrieve_stockbee_grounding
+    bundle = retrieve_stockbee_grounding("stockbee_momentum_burst")
+    assert "RAW_CORPUS_SENTINEL_MUST_NOT_APPEAR" not in bundle.grounding_text
+
+
+@pytest.mark.unit
+def test_selected_wiki_hash_drift_fails_closed(synthetic_stockbee_kb):
+    from tradingagents.knowledge.stockbee_retrieval import StockbeeKnowledgeError, retrieve_stockbee_grounding
+    target = synthetic_stockbee_kb / "wiki/setups/momentum_burst.md"
+    target.write_text(target.read_text(encoding="utf-8") + "\nDRIFT\n", encoding="utf-8")
+    with pytest.raises(StockbeeKnowledgeError, match="hash drift"):
+        retrieve_stockbee_grounding("stockbee_momentum_burst")
+
+
+@pytest.mark.unit
+def test_inventory_hash_drift_fails_closed(synthetic_stockbee_kb):
+    from tradingagents.knowledge.stockbee_retrieval import StockbeeKnowledgeError, retrieve_stockbee_grounding
+    inventory = synthetic_stockbee_kb / "manifests/batch6_phase9_v1_inventory.json"
+    inventory.write_text(inventory.read_text(encoding="utf-8") + " ", encoding="utf-8")
+    with pytest.raises(StockbeeKnowledgeError, match="inventory hash drift"):
+        retrieve_stockbee_grounding("stockbee_momentum_burst")
+
+
+@pytest.mark.unit
+def test_known_profile_missing_kb_fails_closed(tmp_path, monkeypatch):
+    from tradingagents.knowledge import stockbee_retrieval as retrieval
+    monkeypatch.setattr(retrieval, "DEFAULT_KB_ROOT", tmp_path / "missing")
+    with pytest.raises(retrieval.StockbeeKnowledgeError, match="root unavailable"):
+        get_stockbee_grounding("stockbee_momentum_burst")
+
+
+@pytest.mark.unit
+def test_coordinated_closure_and_inventory_rewrite_fails_closed(synthetic_stockbee_kb):
+    from tradingagents.knowledge import stockbee_retrieval as retrieval
+    inventory = synthetic_stockbee_kb / "manifests/batch6_phase9_v1_inventory.json"
+    inventory.write_text(inventory.read_text(encoding="utf-8") + " ", encoding="utf-8")
+    rewritten_sha = hashlib.sha256(inventory.read_bytes()).hexdigest()
+    closure_path = synthetic_stockbee_kb / "manifests/batch6_phase9_v1_closure.json"
+    closure = json.loads(closure_path.read_text(encoding="utf-8"))
+    closure["inventory_sha256"] = rewritten_sha
+    closure_path.write_text(json.dumps(closure, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+    with pytest.raises(retrieval.StockbeeKnowledgeError, match="authority drift"):
+        get_stockbee_grounding("stockbee_momentum_burst")
+
+
+@pytest.mark.unit
+def test_every_context_id_contributes_prompt_body():
+    from tradingagents.knowledge.stockbee_retrieval import _render_grounding
+    ids = tuple(f"wiki/context_{i}.md" for i in range(7))
+    bodies = [(rel, f"HEAD_{i}_" + ("x" * 5000) + f"_TAIL_{i}") for i, rel in enumerate(ids)]
+    text = _render_grounding("stockbee_episodic_pivot", "a" * 64, ids, ("https://stockbee.blogspot.com/example",), bodies)
+    assert len(text) <= 12000
+    for i, rel in enumerate(ids):
+        assert f"[CONTEXT: {rel}]" in text
+        assert f"HEAD_{i}_" in text
+        assert f"_TAIL_{i}" in text
+
+
+@pytest.mark.unit
+def test_simple9_reopen_policy_drift_fails_closed(synthetic_stockbee_kb):
+    from tradingagents.knowledge import stockbee_retrieval as retrieval
+    closure_path = synthetic_stockbee_kb / "manifests/batch6_phase9_v1_closure.json"
+    closure = json.loads(closure_path.read_text(encoding="utf-8"))
+    closure["simple9_reopen_condition_ids"] = ["ANY_REASON"]
+    closure_path.write_text(json.dumps(closure, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+    with pytest.raises(retrieval.StockbeeKnowledgeError, match="reopen policy drift"):
+        get_stockbee_grounding("stockbee_momentum_burst")
+
+
+@pytest.mark.unit
+def test_unknown_profile_does_not_touch_missing_kb(tmp_path, monkeypatch):
+    from tradingagents.knowledge import stockbee_retrieval as retrieval
+    monkeypatch.setattr(retrieval, "DEFAULT_KB_ROOT", tmp_path / "missing")
+    assert get_stockbee_grounding(None) is None
+    assert get_stockbee_grounding("unknown") is None
 
 
 # ---------------------------------------------------------------------------
