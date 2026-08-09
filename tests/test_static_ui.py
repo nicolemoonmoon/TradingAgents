@@ -158,10 +158,13 @@ def test_index_html_has_localhost_bind_note(client):
 
 
 @pytest.mark.unit
-def test_index_html_has_strategy_profile_dropdown_with_placeholder_option(client):
+def test_index_html_exposes_only_verified_analysis_grounding_profiles(client):
     body = client.get("/").text
     assert 'id="strategy-profile-input"' in body
-    assert "None / Manual analysis" in body
+    assert '<option value="">None / Manual analysis</option>' in body
+    assert '<option value="stockbee_momentum_burst">Stockbee — Momentum Burst</option>' in body
+    assert '<option value="stockbee_episodic_pivot">Stockbee — Episodic Pivot</option>' in body
+    assert "placeholder_pradeep_" not in body
 
 
 # ---------------------------------------------------------------------------
@@ -200,9 +203,9 @@ def test_shared_run_settings_scope_hint(client):
     assert hint_text != ""
     for phrase in (
         "used only when you start a real analysis",
-        "Scanner",
+        "Discovery",
         "Compare Board",
-        "Load Run",
+        "Results",
         "do not use",
     ):
         assert phrase in hint_text
@@ -340,90 +343,81 @@ def test_index_html_has_human_notes_column_header(client):
 
 
 # ---------------------------------------------------------------------------
-# Phase 2I: Scanner v0 -- pure UI placeholder, no fetch, no new API. Manually
-# simulates scanner output and sends it into the same in-memory `candidates`
-# array Candidate/Compare Board already render from (verified manually in a
-# browser, same as the rest of app.js's dynamic behavior -- see the Phase 2I
-# plan).
+# E03: Three-system Discovery UI foundation.
+# The legacy DOM ids ``mode-scanner`` / ``scanner-board`` are intentionally
+# retained to avoid unrelated JS churn; their user-facing meaning is now
+# Discovery. Scanner execution itself remains disconnected in E03.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.unit
-def test_index_html_has_scanner_tab(client):
+def test_index_html_has_discovery_mode(client):
     body = client.get("/").text
-    assert 'id="mode-scanner"' in body
-    assert "Scanner" in body
+    mode_switch = _extract_section_html(body, "mode-switch")
+    assert 'id="mode-scanner"' in mode_switch
+    assert "Discovery" in mode_switch
+    assert "Scanner\n" not in mode_switch
 
 
 @pytest.mark.unit
-def test_index_html_has_scanner_profile_selector_with_placeholder_options(client):
+def test_discovery_has_three_independent_selection_systems(client):
     body = client.get("/").text
-    assert 'id="scanner-profile-input"' in body
-    for label in (
-        "Pradeep 9M placeholder",
-        "Pradeep EP placeholder",
-        "Pradeep MAGNA placeholder",
-        "Pradeep Anticipation placeholder",
+    section = _extract_section_html(body, "scanner-board")
+    for system, panel_id in (
+        ("TRADITIONAL", "discovery-traditional"),
+        ("PRADEEP", "discovery-pradeep"),
+        ("TECHNOLOGY", "discovery-technology"),
     ):
-        assert label in body
+        assert f'id="{panel_id}"' in section
+        assert f'data-selection-system="{system}"' in section
 
 
 @pytest.mark.unit
-def test_index_html_has_scanner_output_input_and_send_button(client):
+def test_discovery_truthfully_labels_staged_connectivity(client):
     body = client.get("/").text
-    assert 'id="scanner-output-input"' in body
-    assert 'id="scanner-send-button"' in body
-    assert "Send to Candidates" in body
-
-
-@pytest.mark.unit
-def test_scanner_notice_explains_disconnected_behavior(client):
-    # Phase 2K Step 3C: the old version of this test asserted the literal
-    # endpoint string "POST /api/runs" appears in the notice -- Step 3B's
-    # product goal was specifically to stop the Scanner copy from exposing
-    # that internal endpoint name. This replaces that stale contract with
-    # one scoped to the notice's own text: assert on stable, endpoint-free
-    # phrasing, and assert the endpoint string is now absent.
-    body = client.get("/").text
-
-    scanner_section = _extract_section_html(body, "scanner-board")
-    assert 'id="scanner-not-connected-notice"' in scanner_section
-
-    notice_text = _extract_p_text(body, "scanner-not-connected-notice")
+    section = _extract_section_html(body, "scanner-board")
     for phrase in (
-        "manual list",
-        "does not use market data",
-        "Pradeep knowledge base",
-        "DeepSeek",
+        "Not connected",
+        "Scanner not connected",
+        "Interface reserved",
+        "Technology KB is not built",
+        "continuous tracking are not connected",
     ):
-        assert phrase in notice_text
-    assert "POST /api/runs" not in notice_text
+        assert phrase in section
 
 
 @pytest.mark.unit
-def test_index_html_existing_ids_still_present_after_scanner_tab(client):
-    # Regression guard for Phase 2I: Scanner is additive and must not touch
-    # Start/Load/Candidate Board/Compare Board's existing structure.
+def test_pradeep_discovery_preserves_scanner_architecture_without_fake_rules(client):
     body = client.get("/").text
-    for expected_id in (
-        "ticker-input",
-        "start-button",
-        "reset-button",
-        "run-id-input",
-        "load-run-button",
-        "mode-new",
-        "mode-load",
-        "mode-candidates",
-        "candidate-board",
-        "candidate-ticker-input",
-        "candidate-add-button",
-        "candidate-table-body",
-        "mode-compare",
-        "compare-board",
-        "compare-table-body",
-        "compare-empty-message",
+    section = _extract_section_html(body, "scanner-board")
+    for family in (
+        "Momentum Burst",
+        "Episodic Pivot",
+        "EP 9 Million",
+        "MAGNA / MAGNA53",
+        "Breakout Anticipation",
     ):
-        assert f'id="{expected_id}"' in body
+        assert family in section
+    for legacy in (
+        "placeholder_pradeep_9m",
+        "placeholder_pradeep_ep",
+        "placeholder_pradeep_magna",
+        "placeholder_pradeep_anticipation",
+        "price > 3 (placeholder)",
+        "day change > 4% (placeholder)",
+    ):
+        assert legacy not in body
+
+
+@pytest.mark.unit
+def test_discovery_foundation_has_no_scanner_action_controls(client):
+    body = client.get("/").text
+    section = _extract_section_html(body, "scanner-board")
+    assert 'id="discovery-foundation-notice"' in section
+    assert 'id="scanner-profile-input"' not in section
+    assert 'id="scanner-output-input"' not in section
+    assert 'id="scanner-send-button"' not in section
+    assert "add tickers manually in Unified Candidate Board" in section
 
 
 # ---------------------------------------------------------------------------
@@ -510,27 +504,25 @@ def test_app_js_add_candidates_dedup_by_uppercase_ticker(client):
 
 
 @pytest.mark.unit
-def test_app_js_scanner_send_ignores_empty_ticker_list(client):
-    """Phase 8B: the Scanner send handler checks parseTickerInput result
-    length and shows a status message instead of calling addCandidates
-    when the ticker list is empty."""
+def test_app_js_has_no_legacy_scanner_placeholder_registry(client):
     body = client.get("/app.js").text
-    assert "tickers.length === 0" in body
+    assert "SCANNER_PROFILES" not in body
+    assert "scannerProfileInput" not in body
+    assert "scannerSendButton" not in body
+    assert "placeholder_pradeep_" not in body
 
 
 @pytest.mark.unit
-def test_app_js_scanner_block_has_no_fetch(client):
-    """Phase 8B: the Scanner v0 block contains no fetch calls — it is a pure
-    UI placeholder that pushes tickers into the in-memory candidates array
-    only. Any future real-data integration would need to add fetch here."""
+def test_app_js_discovery_foundation_is_non_executing(client):
     body = client.get("/app.js").text
-    assert "No fetch anywhere in this block" in body
+    marker = "// Discovery foundation (E03):"
+    assert marker in body
+    block = body[body.index(marker):body.index("renderCandidates();", body.index(marker))]
+    assert "fetch(" not in block
+    assert "addCandidates(" not in block
 
 
 @pytest.mark.unit
-def test_index_html_has_scanner_not_connected_notice(client):
-    """Phase 8B: the Scanner tab includes a notice explaining it is not
-    connected to real market data — documents the current v0 placeholder
-    state before any Phase 8C real-data integration."""
+def test_index_html_has_discovery_foundation_notice(client):
     body = client.get("/").text
-    assert 'id="scanner-not-connected-notice"' in body
+    assert 'id="discovery-foundation-notice"' in body

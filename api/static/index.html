@@ -22,8 +22,8 @@
     <section id="shared-run-settings">
       <h2>Run settings</h2>
       <p id="shared-run-settings-scope-hint" class="cost-hint">
-        These settings are used only when you start a real analysis. Scanner,
-        Compare Board, and Load Run do not use them.
+        These settings are used only when you start a real analysis. Discovery,
+        Compare Board, and Results do not use them.
       </p>
       <div class="field">
         <label for="analysis-date-input">Analysis date</label>
@@ -52,6 +52,8 @@
         <label for="strategy-profile-input">Strategy profile</label>
         <select id="strategy-profile-input">
           <option value="">None / Manual analysis</option>
+          <option value="stockbee_momentum_burst">Stockbee — Momentum Burst</option>
+          <option value="stockbee_episodic_pivot">Stockbee — Episodic Pivot</option>
         </select>
       </div>
     </section>
@@ -59,11 +61,11 @@
     <section id="mode-switch">
       <label>
         <input type="radio" name="mode" id="mode-scanner" value="scanner" checked />
-        Scanner
+        Discovery
       </label>
       <label>
         <input type="radio" name="mode" id="mode-candidates" value="candidates" />
-        Candidate Board
+        Unified Candidate Board
       </label>
       <label>
         <input type="radio" name="mode" id="mode-compare" value="compare" />
@@ -71,11 +73,11 @@
       </label>
       <label>
         <input type="radio" name="mode" id="mode-new" value="new" />
-        Start Analysis
+        Analysis
       </label>
       <label>
         <input type="radio" name="mode" id="mode-load" value="load" />
-        Load Run
+        Results / Run
       </label>
     </section>
 
@@ -103,6 +105,12 @@
     </section>
 
     <section id="candidate-board" hidden>
+      <h2>Unified Candidate Board</h2>
+      <p id="candidate-provenance-foundation-note" class="cost-hint">
+        Manual entries have no scanner provenance yet. Traditional and Pradeep
+        scanner provenance will appear here only after their separate scanner
+        contracts are implemented. Technology remains interface-only.
+      </p>
       <p id="candidate-analysis-cost-hint" class="cost-hint">
         Reviewing candidates is free. DeepSeek runs only when you click Analyze.
       </p>
@@ -140,11 +148,11 @@
         Compare Board only compares saved runs. It does not start a new analysis.
       </p>
       <p class="cost-hint">
-        Shows every candidate from Candidate Board side by side. Catalyst
-        Quality / Sector Strength / Volume Quality / Chart Setup are not
-        computed yet -- they always read "Not reviewed" until a future
-        Scanner/Knowledge Base phase fills them in. Human Notes is a
-        free-text scratchpad, kept only in this browser tab's memory.
+        Shows every candidate from Unified Candidate Board side by side.
+        Catalyst Quality / Sector Strength / Volume Quality / Chart Setup are
+        not computed yet -- they remain "Not reviewed" until future scanner
+        integrations provide evidence. Human Notes is a free-text scratchpad,
+        kept only in this browser tab's memory.
       </p>
       <p id="compare-empty-message">No candidates yet -- add some in Candidate Board.</p>
       <div class="table-scroll">
@@ -170,29 +178,64 @@
     </section>
 
     <section id="scanner-board">
-      <p id="scanner-not-connected-notice" class="cost-hint">
-        Scanner is a manual list for now. It does not use market data, the
-        Pradeep knowledge base, or DeepSeek.
+      <h2>Discovery</h2>
+      <p id="discovery-foundation-notice" class="cost-hint">
+        Three independent selection systems share this Discovery surface.
+        Scanner execution is staged: no market-universe scan is connected from
+        this page yet, and no selection standards are merged across systems.
       </p>
-      <div class="field">
-        <label for="scanner-profile-input">Scanner strategy profile</label>
-        <select id="scanner-profile-input">
-          <option value="">Manual / None</option>
-          <option value="placeholder_pradeep_9m">Pradeep 9M placeholder</option>
-          <option value="placeholder_pradeep_ep">Pradeep EP placeholder</option>
-          <option value="placeholder_pradeep_magna">Pradeep MAGNA placeholder</option>
-          <option value="placeholder_pradeep_anticipation">Pradeep Anticipation placeholder</option>
-        </select>
+
+      <div id="discovery-system-grid" class="discovery-grid">
+        <article id="discovery-traditional" class="discovery-card" data-selection-system="TRADITIONAL">
+          <div class="discovery-card-heading">
+            <h3>Traditional</h3>
+            <span class="connection-status status-not-connected">Not connected</span>
+          </div>
+          <p>
+            Traditional factor / fundamental / market selection remains a
+            separate system. Its selection contract and scanner are not
+            connected yet.
+          </p>
+        </article>
+
+        <article id="discovery-pradeep" class="discovery-card" data-selection-system="PRADEEP">
+          <div class="discovery-card-heading">
+            <h3>Pradeep</h3>
+            <span class="connection-status status-partial">Scanner not connected</span>
+          </div>
+          <p>
+            Frozen Pradeep Methodology KB v1 and analysis grounding are
+            available. Executable scanner rules are not connected yet.
+          </p>
+          <p class="discovery-subtitle">Reserved scanner families</p>
+          <ul id="pradeep-reserved-scanner-families">
+            <li>Momentum Burst</li>
+            <li>Episodic Pivot</li>
+            <li>EP 9 Million</li>
+            <li>MAGNA / MAGNA53</li>
+            <li>Breakout Anticipation</li>
+          </ul>
+          <p class="cost-hint">
+            Use Strategy Profile in Run settings for the currently verified
+            Momentum Burst or Episodic Pivot analysis grounding.
+          </p>
+        </article>
+
+        <article id="discovery-technology" class="discovery-card" data-selection-system="TECHNOLOGY">
+          <div class="discovery-card-heading">
+            <h3>Technology</h3>
+            <span class="connection-status status-reserved">Interface reserved</span>
+          </div>
+          <p>
+            Technology KB is not built. Technology scanner, Company Registry,
+            and continuous tracking are not connected in the current mission.
+          </p>
+        </article>
       </div>
-      <ul id="scanner-profile-rules">
-        <li>No scanner rules -- manual/no profile selected.</li>
-      </ul>
-      <div class="field">
-        <label for="scanner-output-input">Tickers to send to Candidate Board</label>
-        <input type="text" id="scanner-output-input" placeholder="AAPL, MSFT, NVDA" />
-      </div>
-      <button id="scanner-send-button" type="button">Send to Candidates</button>
-      <p id="scanner-send-status" class="cost-hint" hidden></p>
+
+      <p id="discovery-manual-intake-hint" class="cost-hint">
+        For now, add tickers manually in Unified Candidate Board.
+      </p>
     </section>
 
     <p id="error-message" class="error" hidden></p>
