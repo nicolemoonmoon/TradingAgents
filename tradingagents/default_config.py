@@ -132,9 +132,11 @@ DEFAULT_CONFIG = _apply_env_overrides({
         "news_data": "yfinance",             # Options: alpha_vantage, yfinance
         "macro_data": "fred",                # Options: fred (needs FRED_API_KEY)
         "prediction_markets": "polymarket",  # Options: polymarket (keyless)
+        "canonical_market_data": "openbb_yfinance",
     },
     # Tool-level configuration (takes precedence over category-level)
     "tool_vendors": {
+        "get_openbb_finra_short_interest": "openbb_finra",
         # Example: "get_stock_data": "alpha_vantage",  # Override category default
     },
     # Benchmark for alpha calculation in the reflection layer.

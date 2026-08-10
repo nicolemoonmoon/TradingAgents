@@ -18,6 +18,18 @@ from .errors import (
     VendorRateLimitError,
 )
 from .fred import get_macro_data as get_fred_macro_data
+from .openbb_adapter import (
+    get_openbb_balance_sheet,
+    get_openbb_cash_flow_statement,
+    get_openbb_finra_short_interest,
+    get_openbb_historical,
+    get_openbb_income_statement,
+    get_openbb_key_metrics,
+    get_openbb_price_target_consensus,
+    get_openbb_profile,
+    get_openbb_quote,
+    get_openbb_share_statistics,
+)
 from .polymarket import get_prediction_markets as get_polymarket_prediction_markets
 from .y_finance import (
     get_balance_sheet as get_yfinance_balance_sheet,
@@ -74,6 +86,21 @@ TOOLS_CATEGORIES = {
         "tools": [
             "get_prediction_markets",
         ]
+    },
+    "canonical_market_data": {
+        "description": "Canonical direct-provider market and issuer data",
+        "tools": [
+            "get_openbb_historical",
+            "get_openbb_quote",
+            "get_openbb_profile",
+            "get_openbb_balance_sheet",
+            "get_openbb_cash_flow_statement",
+            "get_openbb_income_statement",
+            "get_openbb_key_metrics",
+            "get_openbb_share_statistics",
+            "get_openbb_price_target_consensus",
+            "get_openbb_finra_short_interest",
+        ],
     }
 }
 
@@ -82,6 +109,8 @@ VENDOR_LIST = [
     "fred",
     "polymarket",
     "alpha_vantage",
+    "openbb_yfinance",
+    "openbb_finra",
 ]
 
 # Optional enrichment categories. These add macro/event context to the news
@@ -140,6 +169,27 @@ VENDOR_METHODS = {
     # prediction_markets
     "get_prediction_markets": {
         "polymarket": get_polymarket_prediction_markets,
+    },
+    # canonical_market_data: direct OpenBB Fetcher bindings
+    "get_openbb_historical": {"openbb_yfinance": get_openbb_historical},
+    "get_openbb_quote": {"openbb_yfinance": get_openbb_quote},
+    "get_openbb_profile": {"openbb_yfinance": get_openbb_profile},
+    "get_openbb_balance_sheet": {"openbb_yfinance": get_openbb_balance_sheet},
+    "get_openbb_cash_flow_statement": {
+        "openbb_yfinance": get_openbb_cash_flow_statement,
+    },
+    "get_openbb_income_statement": {
+        "openbb_yfinance": get_openbb_income_statement,
+    },
+    "get_openbb_key_metrics": {"openbb_yfinance": get_openbb_key_metrics},
+    "get_openbb_share_statistics": {
+        "openbb_yfinance": get_openbb_share_statistics,
+    },
+    "get_openbb_price_target_consensus": {
+        "openbb_yfinance": get_openbb_price_target_consensus,
+    },
+    "get_openbb_finra_short_interest": {
+        "openbb_finra": get_openbb_finra_short_interest,
     },
 }
 
