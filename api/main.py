@@ -63,9 +63,19 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 
 from api.config import get_clock, get_runs_dir
-from api.schemas import DamagedRun, RunListResponse, RunSummary, StartAnalysisRequest, StartAnalysisResponse
+from api.schemas import (
+    DamagedRun,
+    RunListResponse,
+    RunSummary,
+    StartAnalysisRequest,
+    StartAnalysisResponse,
+)
 from tradingagents.dataflows.utils import safe_ticker_component
-from tradingagents.default_config import DEFAULT_CONFIG, get_stockbee_grounding, set_active_prompt_grounding
+from tradingagents.default_config import (
+    DEFAULT_CONFIG,
+    get_stockbee_grounding,
+    set_active_prompt_grounding,
+)
 from tradingagents.graph.trading_graph import TradingAgentsGraph
 from tradingagents.run_artifact_writer import (
     ArtifactPathError,
@@ -86,6 +96,12 @@ from tradingagents.run_contract import (
     RunEvent,
     RunStatus,
     derive_overall_status,
+)
+from tradingagents.scanners.unified import (
+    SelectionSystem,
+    UnifiedCandidate,
+    UnifiedCandidateError,
+    validate_unified_candidate,
 )
 from tradingagents.streaming_analysis_runner import StreamingDeepSeekAnalysisRunner
 
@@ -382,6 +398,65 @@ def start_analysis(
         analysis_status=AnalysisStatus.QUEUED,
         strategy_profile=request.strategy_profile,
     )
+
+
+# E09: process-local scanner-candidate feed. A transient, in-memory-only
+# store for already-assembled E02 UnifiedCandidate envelopes (produced
+# externally by Traditional/Pradeep scanner runs) -- no database, no
+# filesystem persistence, no background task. This is only a temporary
+# product data feed for the existing Candidate/Compare surfaces; it carries
+# no policy, routing, lifecycle, activation, or persistence authority.
+# Keyed by company_id so independent Traditional/Pradeep selections for the
+# same company accumulate onto one candidate instead of overwriting it.
+_CANDIDATE_FEED_LOCK = threading.Lock()
+_CANDIDATE_FEED: dict[str, UnifiedCandidate] = {}
+
+
+@app.post("/api/scanner-candidates", status_code=201)
+def ingest_scanner_candidate(payload: dict) -> dict:
+    """Accept one E02 UnifiedCandidate envelope, fail closed on any
+    contract violation. Technology is reserved for E10: an envelope
+    containing an actual TECHNOLOGY selection is rejected outright."""
+    try:
+        candidate = validate_unified_candidate(payload)
+    except UnifiedCandidateError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    if any(
+        selection.selection_system is SelectionSystem.TECHNOLOGY
+        for selection in candidate.selections
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="Technology selections are not connected in E09; reserved for E10.",
+        )
+
+    with _CANDIDATE_FEED_LOCK:
+        existing = _CANDIDATE_FEED.get(candidate.company_id)
+        if existing is None:
+            merged = candidate
+        else:
+            # Preserve every prior independent selection alongside the new
+            # one -- never collapse multiple system matches into one, and
+            # never compute a cross-system score from them.
+            try:
+                merged = UnifiedCandidate(
+                    company_id=candidate.company_id,
+                    identity_status=candidate.identity_status,
+                    ticker=candidate.ticker,
+                    selections=existing.selections + candidate.selections,
+                    display_name=candidate.display_name or existing.display_name,
+                )
+            except UnifiedCandidateError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+        _CANDIDATE_FEED[candidate.company_id] = merged
+    return merged.to_dict()
+
+
+@app.get("/api/scanner-candidates")
+def list_scanner_candidates() -> list[dict]:
+    with _CANDIDATE_FEED_LOCK:
+        return [candidate.to_dict() for candidate in _CANDIDATE_FEED.values()]
 
 
 # Mounted last, after every /api/... route above, so this catch-all can never

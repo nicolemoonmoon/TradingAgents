@@ -5,6 +5,7 @@ Fixtures are built with the same run_contract/run_artifact_writer/reporting
 functions the real runners use, never hand-rolled JSON strings.
 """
 
+import json
 import threading
 import time
 from datetime import datetime, timezone
@@ -35,7 +36,6 @@ from tradingagents.run_contract import (  # noqa: E402
     AnalysisManifest,
     AnalysisStatus,
     EventType,
-    OverallStatus,
     ReviewStatus,
     RunEvent,
     RunStatus,
@@ -1566,3 +1566,228 @@ def test_start_analysis_request_allows_non_empty_free_form_model(monkeypatch):
     )
     assert request.quick_model == "some-arbitrary-model-id"
     assert request.deep_model == "gpt-5.5"
+
+
+# ---------------------------------------------------------------------------
+# E09: process-local scanner-candidate feed. Envelopes below mirror the exact
+# E02 mapping shape frozen by tests/test_e09_unified_candidate.py -- this
+# module deliberately does not import tradingagents.scanners test helpers,
+# to independently characterize the wire contract the API exposes.
+# ---------------------------------------------------------------------------
+
+import api.main  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _clear_scanner_candidate_feed():
+    """The E09 candidate feed is process-local, module-level state -- clear
+    it around every test in this module so tests never leak candidates into
+    each other regardless of execution order."""
+    api.main._CANDIDATE_FEED.clear()
+    yield
+    api.main._CANDIDATE_FEED.clear()
+
+
+def _selection_mapping(
+    *,
+    selection_id="selection:1",
+    system="TRADITIONAL",
+    scanner_id="scanner-1",
+    setup_id=None,
+    matched_rules=("rule.match",),
+    evidence_id="evidence:1",
+):
+    return {
+        "selection_id": selection_id,
+        "selection_system": system,
+        "producer_version": "producer-v1",
+        "scanner_id": scanner_id,
+        "setup_id": setup_id,
+        "matched_rules": list(matched_rules),
+        "failed_rules": [],
+        "unknown_rules": [],
+        "evidence_refs": [
+            {
+                "evidence_id": evidence_id,
+                "source_type": "fundamentals",
+                "source_ref": "issuer:filing:1",
+                "source_url": None,
+                "data_as_of": "2026-08-08",
+            }
+        ],
+        "detected_at": "2026-08-10T03:00:00+00:00",
+        "data_as_of": "2026-08-08",
+        "system_rank": None,
+    }
+
+
+def _candidate_mapping(*, company_id="ticker:ACME", ticker="ACME", selections=None):
+    return {
+        "schema_version": "1.0.0",
+        "company_id": company_id,
+        "display_name": "Acme Limited",
+        "identity_status": "provisional",
+        "ticker": ticker,
+        "selections": selections if selections is not None else [_selection_mapping()],
+    }
+
+
+@pytest.mark.unit
+def test_scanner_candidate_ingestion_accepts_valid_traditional_and_pradeep(client):
+    traditional_resp = client.post(
+        "/api/scanner-candidates", json=_candidate_mapping()
+    )
+    assert traditional_resp.status_code == 201
+    body = traditional_resp.json()
+    assert body["company_id"] == "ticker:ACME"
+    assert body["selections"][0]["selection_system"] == "TRADITIONAL"
+
+    pradeep_resp = client.post(
+        "/api/scanner-candidates",
+        json=_candidate_mapping(
+            selections=[
+                _selection_mapping(
+                    selection_id="selection:pradeep:1",
+                    system="PRADEEP",
+                    scanner_id="e05_pradeep_scanner",
+                    setup_id="stockbee_momentum_burst",
+                    matched_rules=("MB_FIRST_DAY_RANGE_EXPANSION",),
+                    evidence_id="evidence:pradeep:1",
+                )
+            ]
+        ),
+    )
+    assert pradeep_resp.status_code == 201
+    assert pradeep_resp.json()["selections"][-1]["selection_system"] == "PRADEEP"
+
+
+@pytest.mark.unit
+def test_scanner_candidate_ingestion_fails_closed_on_malformed_envelope(client):
+    malformed = _candidate_mapping()
+    del malformed["ticker"]
+    resp = client.post("/api/scanner-candidates", json=malformed)
+    assert resp.status_code == 422
+    assert "missing keys" in resp.json()["detail"]
+
+    resp = client.get("/api/scanner-candidates")
+    assert resp.json() == []
+
+
+@pytest.mark.unit
+def test_scanner_candidate_ingestion_rejects_technology_actual_selection(client):
+    resp = client.post(
+        "/api/scanner-candidates",
+        json=_candidate_mapping(selections=[_selection_mapping(system="TECHNOLOGY")]),
+    )
+    assert resp.status_code == 422
+    assert "Technology" in resp.json()["detail"]
+
+    resp = client.get("/api/scanner-candidates")
+    assert resp.json() == []
+
+
+@pytest.mark.unit
+def test_scanner_candidate_feed_preserves_multiple_independent_system_matches(client):
+    client.post("/api/scanner-candidates", json=_candidate_mapping())
+    client.post(
+        "/api/scanner-candidates",
+        json=_candidate_mapping(
+            selections=[
+                _selection_mapping(
+                    selection_id="selection:pradeep:1",
+                    system="PRADEEP",
+                    scanner_id="e05_pradeep_scanner",
+                    setup_id="stockbee_momentum_burst",
+                    matched_rules=("MB_FIRST_DAY_RANGE_EXPANSION",),
+                    evidence_id="evidence:pradeep:1",
+                )
+            ]
+        ),
+    )
+
+    resp = client.get("/api/scanner-candidates")
+    assert resp.status_code == 200
+    candidates = resp.json()
+    assert len(candidates) == 1
+    selections = candidates[0]["selections"]
+    assert [item["selection_system"] for item in selections] == ["TRADITIONAL", "PRADEEP"]
+    assert selections[0]["matched_rules"] != selections[1]["matched_rules"]
+    assert selections[0]["evidence_refs"] != selections[1]["evidence_refs"]
+
+
+@pytest.mark.unit
+def test_scanner_candidate_feed_never_introduces_a_combined_score(client):
+    client.post("/api/scanner-candidates", json=_candidate_mapping())
+    client.post(
+        "/api/scanner-candidates",
+        json=_candidate_mapping(
+            selections=[_selection_mapping(selection_id="selection:2", scanner_id="scanner-2")]
+        ),
+    )
+
+    resp = client.get("/api/scanner-candidates")
+    body = resp.json()
+    serialized = json.dumps(body).lower()
+    assert "combined_score" not in serialized
+    assert "cross_system_score" not in serialized
+    assert "overall_score" not in serialized
+
+
+@pytest.mark.unit
+def test_scanner_candidate_readback_preserves_provenance(client):
+    payload = _candidate_mapping()
+    client.post("/api/scanner-candidates", json=payload)
+
+    resp = client.get("/api/scanner-candidates")
+    [candidate] = resp.json()
+    assert candidate == payload
+
+
+# ---------------------------------------------------------------------------
+# E09 bounded repair correction: canonical company identity with a nullable
+# ticker must survive API readback intact, and a scanner candidate's
+# company_id must never be usable in place of a real ticker at /api/runs.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_scanner_candidate_canonical_identity_with_null_ticker_survives_readback(client):
+    payload = _candidate_mapping(
+        company_id="example:private-company:001",
+        ticker=None,
+        selections=[_selection_mapping(system="PRADEEP")],
+    )
+    payload["identity_status"] = "canonical"
+
+    post_resp = client.post("/api/scanner-candidates", json=payload)
+    assert post_resp.status_code == 201
+    assert post_resp.json()["company_id"] == "example:private-company:001"
+    assert post_resp.json()["ticker"] is None
+
+    resp = client.get("/api/scanner-candidates")
+    [candidate] = resp.json()
+    assert candidate == payload
+    assert candidate["ticker"] is None
+
+
+@pytest.mark.unit
+def test_no_ticker_scanner_candidate_cannot_start_run_using_company_id_as_ticker(client):
+    """The old UI merge substituted a ticker-less candidate's company_id
+    into the ticker field (``envelope.ticker || envelope.company_id``). Even
+    if a caller reproduced that exact substitution against the raw API, the
+    ticker validator must fail closed -- company_id shapes like
+    ``example:private-company:001`` or ``ticker:ACME`` contain characters
+    (``:``) that are never a valid ticker."""
+    payload = _candidate_mapping(
+        company_id="example:private-company:001",
+        ticker=None,
+        selections=[_selection_mapping(system="PRADEEP")],
+    )
+    payload["identity_status"] = "canonical"
+    client.post("/api/scanner-candidates", json=payload)
+
+    resp = client.post(
+        "/api/runs",
+        json={"ticker": "example:private-company:001", "analysis_date": "2026-08-12"},
+    )
+    assert resp.status_code == 422

@@ -141,6 +141,64 @@
     return flags.length ? flags.join(", ") : "(none)";
   }
 
+  // E09: renders one candidate's full selection provenance -- system origin,
+  // selection/producer identity, scanner/setup identity, matched/failed/
+  // unknown rule why-selected evidence, evidence-id provenance, and temporal/
+  // rank fields. Selections are stored exactly as the E02 contract returns
+  // them (snake_case, unmodified) so this never grows a second, drifting
+  // candidate contract. Never combines multiple systems' selections into a
+  // single score; each selection is shown on its own.
+  function formatProvenance(provenance) {
+    if (!provenance || provenance.length === 0) {
+      return "Manual — no scanner provenance";
+    }
+    return provenance
+      .map((selection) => {
+        const setup = selection.setup_id ? `/${selection.setup_id}` : "";
+        const matched =
+          selection.matched_rules && selection.matched_rules.length
+            ? selection.matched_rules.join(", ")
+            : "—";
+        const failed =
+          selection.failed_rules && selection.failed_rules.length
+            ? selection.failed_rules.join(", ")
+            : "—";
+        const unknown =
+          selection.unknown_rules && selection.unknown_rules.length
+            ? selection.unknown_rules.join(", ")
+            : "—";
+        const evidence = (selection.evidence_refs || [])
+          .map(
+            (ref) =>
+              `${ref.evidence_id} [${ref.source_type}] ref=${ref.source_ref}; ` +
+              `url=${ref.source_url ?? "null"}; data_as_of=${ref.data_as_of ?? "null"}`
+          )
+          .join(" || ");
+        const rank = selection.system_rank
+          ? `; rank: ${selection.system_rank.value} (${selection.system_rank.meaning}; ` +
+            `higher_is_better=${selection.system_rank.higher_is_better})`
+          : "";
+        return (
+          `${selection.selection_system}${setup} via ${selection.scanner_id} ` +
+          `[${selection.selection_id} / ${selection.producer_version}] ` +
+          `— matched: ${matched}; failed: ${failed}; unknown: ${unknown}; ` +
+          `evidence_refs: ${evidence || "—"}; detected_at: ${selection.detected_at}; ` +
+          `data_as_of: ${selection.data_as_of}${rank}`
+        );
+      })
+      .join(" | ");
+  }
+
+  // E09: displays ticker when present; otherwise falls back to E02's
+  // display_name, then company_id. Never substitutes company_id into the
+  // ticker field itself -- callers needing the real ticker must still see
+  // null so Analyze can fail closed truthfully.
+  function formatIdentity(candidate) {
+    if (candidate.ticker) return candidate.ticker;
+    if (candidate.displayName) return candidate.displayName;
+    return candidate.companyId || "(unknown)";
+  }
+
   function renderFinalDecision(runId, manifest) {
     traderActionLabel.textContent = formatStatusLabel(manifest.trader_action);
     traderActionLabel.className = "decision-badge";
@@ -347,13 +405,19 @@
   }
 
   function addCandidates(raw) {
-    const seen = new Set(candidates.map((c) => c.ticker.toUpperCase()));
+    const seen = new Set(
+      candidates.filter((c) => c.ticker).map((c) => c.ticker.toUpperCase())
+    );
     for (const ticker of parseTickerInput(raw)) {
       const key = ticker.toUpperCase();
       if (seen.has(key)) continue;
       seen.add(key);
       candidates.push({
         ticker,
+        // E09: manually-added candidates have no E02 company identity of
+        // their own -- only scanner-derived candidates carry companyId.
+        companyId: null,
+        displayName: null,
         runId: null,
         analysisStatus: null,
         strategyProfile: null,
@@ -370,6 +434,10 @@
         volumeQuality: null,
         chartSetup: null,
         humanNotes: "",
+        // E09: manually-added candidates have no scanner provenance --
+        // this stays an empty array unless a scanner feed merge (below)
+        // finds a matching ticker.
+        provenance: [],
       });
     }
     renderCandidates();
@@ -397,12 +465,13 @@
       const row = document.createElement("tr");
 
       const cells = [
-        candidate.ticker,
+        formatIdentity(candidate),
         formatCandidateStrategyProfile(candidate),
         candidate.analysisStatus ?? "not run",
         candidate.traderAction ?? "—",
         candidate.draftRating ?? "—",
         formatDataQualityFlags(candidate.dataQualityFlags),
+        formatProvenance(candidate.provenance),
       ];
       for (const text of cells) {
         const td = document.createElement("td");
@@ -413,8 +482,16 @@
       const actionCell = document.createElement("td");
       const analyzeButton = document.createElement("button");
       analyzeButton.type = "button";
-      analyzeButton.textContent = "Analyze";
-      analyzeButton.addEventListener("click", () => analyzeCandidate(candidate));
+      if (candidate.ticker) {
+        analyzeButton.textContent = "Analyze";
+        analyzeButton.addEventListener("click", () => analyzeCandidate(candidate));
+      } else {
+        // E09: no ticker -- fail closed rather than fabricating one from
+        // company_id or any other identity field.
+        analyzeButton.textContent = "Analyze (no ticker)";
+        analyzeButton.disabled = true;
+        analyzeButton.title = "This candidate has no ticker; Analyze is unavailable.";
+      }
       actionCell.appendChild(analyzeButton);
       if (candidate.errorMessage) {
         const errorDiv = document.createElement("div");
@@ -454,6 +531,13 @@
 
   async function analyzeCandidate(candidate) {
     candidate.errorMessage = null;
+    if (!candidate.ticker) {
+      // E09: fail closed -- never send company_id (or any non-ticker
+      // identity) to /api/runs as though it were a ticker.
+      candidate.errorMessage = "Cannot analyze: this candidate has no ticker.";
+      renderCandidates();
+      return;
+    }
     try {
       const { resp, body } = await postAnalysis(candidate.ticker);
       if (resp.status !== 202) {
@@ -510,12 +594,13 @@
       const row = document.createElement("tr");
 
       const cells = [
-        candidate.ticker,
+        formatIdentity(candidate),
         formatCandidateStrategyProfile(candidate),
         candidate.analysisStatus ?? "not run",
         candidate.traderAction ?? "—",
         candidate.draftRating ?? "—",
         formatDataQualityFlags(candidate.dataQualityFlags),
+        formatProvenance(candidate.provenance),
       ];
       for (const text of cells) {
         const td = document.createElement("td");
@@ -567,4 +652,80 @@
   // -------------------------------------------------------------------
 
   renderCandidates();
+
+  // -------------------------------------------------------------------
+  // E09: Unified scanner-candidate feed. Fetches already-selected
+  // Traditional/Pradeep UnifiedCandidate envelopes from the process-local
+  // API feed and merges them into the exact same in-memory `candidates`
+  // array Candidate Board and Compare Board already share -- no second
+  // client-side datasource/state store. Manual candidates (added via the
+  // ticker input) keep an empty `provenance` array and render as having
+  // no scanner provenance. Technology never appears here: the backend
+  // feed rejects any envelope carrying an actual TECHNOLOGY selection.
+  // -------------------------------------------------------------------
+
+  // E09: E02 allows canonical company identity with a nullable ticker.
+  // company_id is never substituted into the ticker field -- a ticker-less
+  // envelope is matched/created by company_id alone, so its candidate keeps
+  // ticker === null rather than fabricating one.
+  function findOrCreateScannerCandidate(envelope) {
+    let candidate = null;
+    if (envelope.ticker) {
+      const key = envelope.ticker.toUpperCase();
+      candidate = candidates.find((c) => c.ticker && c.ticker.toUpperCase() === key);
+    } else {
+      candidate = candidates.find((c) => c.companyId === envelope.company_id);
+    }
+    if (candidate) {
+      candidate.companyId = envelope.company_id;
+      candidate.ticker = candidate.ticker || envelope.ticker;
+      candidate.displayName = envelope.display_name || candidate.displayName;
+      return candidate;
+    }
+    candidate = {
+      ticker: envelope.ticker,
+      companyId: envelope.company_id,
+      displayName: envelope.display_name,
+      runId: null,
+      analysisStatus: null,
+      strategyProfile: null,
+      traderAction: null,
+      draftRating: null,
+      dataQualityFlags: null,
+      errorMessage: null,
+      catalystQuality: null,
+      sectorStrength: null,
+      volumeQuality: null,
+      chartSetup: null,
+      humanNotes: "",
+      provenance: [],
+    };
+    candidates.push(candidate);
+    return candidate;
+  }
+
+  function mergeScannerCandidates(envelopes) {
+    for (const envelope of envelopes) {
+      const candidate = findOrCreateScannerCandidate(envelope);
+      // E09: keep the full E02 selection mapping exactly as returned --
+      // selection_id, producer_version, failed/unknown rules, data_as_of,
+      // and system_rank all survive into Candidate/Compare state.
+      candidate.provenance = envelope.selections;
+    }
+    renderCandidates();
+  }
+
+  async function fetchScannerCandidates() {
+    try {
+      const { resp, body } = await fetchJson("/api/scanner-candidates");
+      if (resp.ok && Array.isArray(body) && body.length > 0) {
+        mergeScannerCandidates(body);
+      }
+    } catch {
+      // Transient network error -- Candidate Board still works with
+      // manual entries; nothing else in this page depends on this fetch.
+    }
+  }
+
+  fetchScannerCandidates();
 })();

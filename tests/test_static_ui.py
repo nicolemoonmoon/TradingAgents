@@ -526,3 +526,118 @@ def test_app_js_discovery_foundation_is_non_executing(client):
 def test_index_html_has_discovery_foundation_notice(client):
     body = client.get("/").text
     assert 'id="discovery-foundation-notice"' in body
+
+
+# ---------------------------------------------------------------------------
+# E09: Unified scanner-candidate feed merges into the existing shared
+# Candidate/Compare state. Static source-level assertions only, matching the
+# rest of this module's approach to app.js -- no JS runtime, no browser.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_app_js_fetches_scanner_candidates_into_shared_candidates_state(client):
+    body = client.get("/app.js").text
+    assert 'fetchJson("/api/scanner-candidates")' in body
+    assert "function mergeScannerCandidates(envelopes)" in body
+    # No second client-side datasource: the merge pushes onto the exact same
+    # `candidates` array Candidate Board and Compare Board already share.
+    assert "candidates.push(candidate)" in body
+    assert "let candidates = []" in body
+    assert body.count("let candidates = []") == 1
+
+
+@pytest.mark.unit
+def test_app_js_manual_candidates_have_no_scanner_provenance(client):
+    body = client.get("/app.js").text
+    assert "provenance: []" in body
+    assert "no scanner provenance" in body.lower()
+
+
+@pytest.mark.unit
+def test_app_js_candidate_and_compare_tables_render_why_selected_provenance(client):
+    body = client.get("/app.js").text
+    assert "function formatProvenance(provenance)" in body
+    assert "formatProvenance(candidate.provenance)" in body
+    # Used in both renderCandidateTable and renderCompareTable.
+    assert body.count("formatProvenance(candidate.provenance)") == 2
+    # E09 bounded repair: provenance is stored/rendered as the exact E02
+    # selection mapping (snake_case, unmodified) so full provenance --
+    # including failed/unknown rules, selection_id, producer_version,
+    # data_as_of, and system_rank -- survives into Candidate/Compare state
+    # instead of being projected down to a lossy subset.
+    assert "selection.matched_rules" in body
+    assert "selection.failed_rules" in body
+    assert "selection.unknown_rules" in body
+    assert "selection.scanner_id" in body
+    assert "selection.evidence_refs" in body
+    assert "ref.evidence_id" in body
+    assert "ref.source_type" in body
+    assert "ref.source_ref" in body
+    assert "ref.source_url" in body
+    assert "ref.data_as_of" in body
+    assert "selection.selection_id" in body
+    assert "selection.producer_version" in body
+    assert "selection.detected_at" in body
+    assert "selection.data_as_of" in body
+    assert "selection.system_rank" in body
+    assert "selection.system_rank.higher_is_better" in body
+    assert "candidate.provenance = envelope.selections" in body
+
+
+@pytest.mark.unit
+def test_index_html_has_scanner_provenance_column_in_both_tables(client):
+    body = client.get("/").text
+    for section_id in ("candidate-board", "compare-board"):
+        section_html = _extract_section_html(body, section_id)
+        assert "<th>Company / Ticker</th>" in section_html
+        assert "<th>Ticker</th>" not in section_html
+        assert "<th>Scanner Provenance</th>" in section_html
+
+
+@pytest.mark.unit
+def test_app_js_scanner_candidate_merge_never_forms_a_combined_score(client):
+    body = client.get("/app.js").text
+    assert "combinedScore" not in body
+    assert "combined_score" not in body
+    assert "crossSystemScore" not in body
+
+
+# ---------------------------------------------------------------------------
+# E09 bounded repair correction: company_id must never be substituted into
+# the ticker field, and a ticker-less scanner candidate's Analyze action must
+# fail closed rather than fabricate a ticker.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_app_js_never_substitutes_company_id_into_ticker_field(client):
+    body = client.get("/app.js").text
+    # The old lossy merge did `envelope.ticker || envelope.company_id` and
+    # assigned the result to `ticker` -- that exact fallback must be gone.
+    assert "envelope.ticker || envelope.company_id" not in body
+    assert "function findOrCreateScannerCandidate(envelope)" in body
+    assert "ticker: envelope.ticker," in body
+    assert "companyId: envelope.company_id" in body
+
+
+@pytest.mark.unit
+def test_app_js_analyze_fails_closed_without_ticker(client):
+    body = client.get("/app.js").text
+    # Row-level: the Analyze button is disabled and never wired to a click
+    # handler when a candidate has no ticker.
+    assert "if (candidate.ticker) {" in body
+    assert "analyzeButton.disabled = true;" in body
+    # Defense in depth: analyzeCandidate itself refuses to run without a
+    # ticker even if a disabled button were somehow triggered anyway.
+    assert "async function analyzeCandidate(candidate) {" in body
+    assert "Cannot analyze: this candidate has no ticker." in body
+    assert "postAnalysis(candidate.company" not in body
+
+
+@pytest.mark.unit
+def test_app_js_formats_identity_from_ticker_display_name_or_company_id(client):
+    body = client.get("/app.js").text
+    assert "function formatIdentity(candidate)" in body
+    assert "formatIdentity(candidate)" in body
+    assert body.count("formatIdentity(candidate)") >= 3
