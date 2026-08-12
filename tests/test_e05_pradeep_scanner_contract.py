@@ -2,7 +2,6 @@
 
 from pathlib import Path
 
-
 CONTRACT_PATH = Path(__file__).resolve().parents[1] / "docs" / "e05_pradeep_scanner_contract.md"
 
 

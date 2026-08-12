@@ -3,7 +3,6 @@ No provider calls. No server. No POST /api/runs.
 """
 import hashlib
 import json
-from pathlib import Path
 
 import pytest
 
@@ -172,7 +171,10 @@ def test_runtime_does_not_use_raw_corpus():
 
 @pytest.mark.unit
 def test_selected_wiki_hash_drift_fails_closed(synthetic_stockbee_kb):
-    from tradingagents.knowledge.stockbee_retrieval import StockbeeKnowledgeError, retrieve_stockbee_grounding
+    from tradingagents.knowledge.stockbee_retrieval import (
+        StockbeeKnowledgeError,
+        retrieve_stockbee_grounding,
+    )
     target = synthetic_stockbee_kb / "wiki/setups/momentum_burst.md"
     target.write_text(target.read_text(encoding="utf-8") + "\nDRIFT\n", encoding="utf-8")
     with pytest.raises(StockbeeKnowledgeError, match="hash drift"):
@@ -181,7 +183,10 @@ def test_selected_wiki_hash_drift_fails_closed(synthetic_stockbee_kb):
 
 @pytest.mark.unit
 def test_inventory_hash_drift_fails_closed(synthetic_stockbee_kb):
-    from tradingagents.knowledge.stockbee_retrieval import StockbeeKnowledgeError, retrieve_stockbee_grounding
+    from tradingagents.knowledge.stockbee_retrieval import (
+        StockbeeKnowledgeError,
+        retrieve_stockbee_grounding,
+    )
     inventory = synthetic_stockbee_kb / "manifests/batch6_phase9_v1_inventory.json"
     inventory.write_text(inventory.read_text(encoding="utf-8") + " ", encoding="utf-8")
     with pytest.raises(StockbeeKnowledgeError, match="inventory hash drift"):
@@ -471,12 +476,11 @@ def test_agent_modules_do_not_import_active_grounding_by_value():
         source = inspect.getsource(mod)
         tree = ast.parse(source)
         for node in ast.walk(tree):
-            if isinstance(node, ast.ImportFrom):
-                if node.module == "tradingagents.default_config":
-                    for alias in node.names:
-                        assert alias.name != "_active_prompt_grounding", (
-                            f"{mod.__name__} imports _active_prompt_grounding by value"
-                        )
+            if (isinstance(node, ast.ImportFrom)) and (node.module == "tradingagents.default_config"):
+                for alias in node.names:
+                    assert alias.name != "_active_prompt_grounding", (
+                        f"{mod.__name__} imports _active_prompt_grounding by value"
+                    )
 
 
 # ---------------------------------------------------------------------------
@@ -489,7 +493,7 @@ def test_market_analyst_prompt_includes_sentinel_grounding(monkeypatch):
     set_active_prompt_grounding(SENTINEL)
 
     # Minimal state for market_analyst_node
-    state = {
+    _state = {
         "trade_date": "2026-07-03",
         "messages": [],
         "company_of_interest": "AAPL",

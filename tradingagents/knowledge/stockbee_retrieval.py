@@ -1,11 +1,11 @@
 from __future__ import annotations
 
+import json
+import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from hashlib import sha256
-import json
 from pathlib import Path
-import re
-from typing import Iterable
 
 DEFAULT_KB_ROOT = Path.home() / "ResearchData" / "pradeep_stockbee"
 MAX_GROUNDING_CHARS = 12_000
@@ -212,7 +212,7 @@ def _render_grounding(
     base = body_budget // count
     remainder = body_budget % count
     sections: list[str] = []
-    for idx, ((rel, text), label) in enumerate(zip(bodies, labels)):
+    for idx, ((rel, text), label) in enumerate(zip(bodies, labels, strict=False)):
         budget = base + (1 if idx < remainder else 0)
         clipped = _clip_context(text, budget)
         if not clipped:
