@@ -42,6 +42,7 @@ __all__ = [
     "build_instrument_context",
     "resolve_instrument_identity",
     "get_instrument_context_from_state",
+    "get_evidence_scope_instruction",
     "get_language_instruction",
     "create_msg_delete",
 ]
@@ -184,6 +185,47 @@ def get_instrument_context_from_state(state: Mapping[str, Any]) -> str:
     return build_instrument_context(
         str(state["company_of_interest"]),
         state.get("asset_type", "stock"),
+    )
+
+
+def get_evidence_scope_instruction(state: Mapping[str, Any]) -> str:
+    """Describe which analyst domains produced evidence in this exact run.
+
+    Missing reports are epistemic gaps, not permission to refill the domain
+    from model memory. This keeps analyst selection meaningful without adding
+    providers, persistence, or a second evidence system.
+    """
+    report_fields = (
+        ("market_report", "Market"),
+        ("fundamentals_report", "Fundamentals"),
+        ("sentiment_report", "Sentiment"),
+        ("news_report", "News"),
+    )
+    evaluated: list[str] = []
+    not_evaluated: list[str] = []
+    for field, label in report_fields:
+        value = state.get(field, "")
+        if isinstance(value, str) and value.strip():
+            evaluated.append(label)
+        else:
+            not_evaluated.append(label)
+
+    evaluated_text = ", ".join(evaluated) if evaluated else "none"
+    missing_text = ", ".join(not_evaluated) if not_evaluated else "none"
+    return (
+        "CURRENT-RUN EVIDENCE SCOPE:\n"
+        f"- Evaluated in this run: {evaluated_text}.\n"
+        f"- Not evaluated in this run: {missing_text}.\n"
+        "Evidence discipline: a domain marked not evaluated is unknown for this "
+        "run. Do not fill it from pretrained/model memory or present unsupported "
+        "company-specific claims as verified facts. Upstream debates, plans, and "
+        "recommendations may be used as derived reasoning, but they are not new "
+        "evidence: do not introduce or strengthen a company-specific factual claim "
+        "outside the domains evaluated in this run. Any new material factual claim "
+        "must be traceable to an available current-run report or the explicit "
+        "current-run instrument context. Unsupported possibilities may be mentioned "
+        "only as hypotheses, unknowns, or information needed, and must not drive "
+        "the decision."
     )
 
 

@@ -1,4 +1,5 @@
 from tradingagents.agents.utils.agent_utils import (
+    get_evidence_scope_instruction,
     get_instrument_context_from_state,
     get_language_instruction,
 )
@@ -18,14 +19,17 @@ def create_conservative_debator(llm):
         news_report = state["news_report"]
         fundamentals_report = state["fundamentals_report"]
         instrument_context = get_instrument_context_from_state(state)
+        evidence_scope = get_evidence_scope_instruction(state)
 
         trader_decision = state["trader_investment_plan"]
 
-        prompt = f"""As the Conservative Risk Analyst, your primary objective is to protect assets, minimize volatility, and ensure steady, reliable growth. You prioritize stability, security, and risk mitigation, carefully assessing potential losses, economic downturns, and market volatility. When evaluating the trader's decision or plan, critically examine high-risk elements, pointing out where the decision may expose the firm to undue risk and where more cautious alternatives could secure long-term gains. Here is the trader's decision:
+        prompt = f"""As the Conservative Risk Analyst, your primary objective is to protect assets, minimize volatility, and emphasize risk mitigation. Assess potential losses, economic risks, and market volatility only to the extent supported by evaluated current-run evidence; otherwise label them as scenarios or unknowns rather than facts. When evaluating the trader's decision or plan, critically examine supported high-risk elements and identify where evidence is insufficient for a confident conclusion. Here is the trader's decision:
 
 {trader_decision}
 
 Your task is to actively counter the arguments of the Aggressive and Neutral Analysts, highlighting where their views may overlook potential threats or fail to prioritize sustainability. Respond directly to their points, drawing from the following data sources to build a convincing case for a low-risk approach adjustment to the trader's decision:
+
+{evidence_scope}
 
 {instrument_context}
 Market Research Report: {market_research_report}

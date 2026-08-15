@@ -1,4 +1,5 @@
 from tradingagents.agents.utils.agent_utils import (
+    get_evidence_scope_instruction,
     get_instrument_context_from_state,
     get_language_instruction,
 )
@@ -16,6 +17,7 @@ def create_bull_researcher(llm):
         news_report = state["news_report"]
         fundamentals_report = state["fundamentals_report"]
         instrument_context = get_instrument_context_from_state(state)
+        evidence_scope = get_evidence_scope_instruction(state)
         asset_type = state.get("asset_type", "stock")
         target_label = "stock" if asset_type == "stock" else "asset"
         fundamentals_label = (
@@ -24,16 +26,18 @@ def create_bull_researcher(llm):
             else "Asset fundamentals report (may be unavailable for crypto)"
         )
 
-        prompt = f"""You are a Bull Analyst advocating for investing in the {target_label}. Your task is to build a strong, evidence-based case emphasizing growth potential, competitive advantages, and positive market indicators. Leverage the provided research and data to address concerns and counter bearish arguments effectively.
+        prompt = f"""You are a Bull Analyst advocating for investing in the {target_label}. Build the strongest evidence-based bull case that the current run actually supports; do not manufacture a bull case from unselected evidence domains. Leverage the provided research and data to address concerns and counter bearish arguments effectively.
 
-Key points to focus on:
-- Growth Potential: Highlight the company's market opportunities, revenue projections, and scalability.
-- Competitive Advantages: Emphasize factors like unique products, strong branding, or dominant market positioning.
-- Positive Indicators: Use financial health, industry trends, and recent positive news as evidence.
+Key points to focus on, only when supported by evaluated current-run evidence:
+- Growth Potential: Discuss market opportunities, revenue projections, or scalability only when current-run evidence supports them; otherwise state that they were not evaluated.
+- Competitive Advantages: Discuss products, branding, or market positioning only when current-run evidence supports them; otherwise state that they were not evaluated.
+- Positive Indicators: Use only evaluated financial, industry, market, sentiment, or news evidence; do not infer missing-domain facts.
 - Bear Counterpoints: Critically analyze the bear argument with specific data and sound reasoning, addressing concerns thoroughly and showing why the bull perspective holds stronger merit.
 - Engagement: Present your argument in a conversational style, engaging directly with the bear analyst's points and debating effectively rather than just listing data.
 
 Resources available:
+{evidence_scope}
+
 {instrument_context}
 Market research report: {market_research_report}
 Social media sentiment report: {sentiment_report}

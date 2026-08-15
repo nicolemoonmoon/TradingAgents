@@ -729,3 +729,48 @@ def test_app_js_governed_disclosure_never_introduces_combined_score(client):
     assert "combinedScore" not in body
     assert "combined_score" not in body
     assert "crossSystemScore" not in body
+
+
+# ---------------------------------------------------------------------------
+# Step 1 live-acceptance bounded repair: A1/A7.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_app_js_initializes_local_analysis_date_and_guards_empty_post(client):
+    body = client.get("/app.js").text
+    assert "function localTodayISO()" in body
+    assert "if (!analysisDateInput.value)" in body
+    assert "analysisDateInput.value = localTodayISO();" in body
+    assert 'throw new Error("Analysis date is required.");' in body
+    assert "analysis_date: analysisDate" in body
+
+
+@pytest.mark.unit
+def test_final_decision_uses_governed_semantics_before_legacy(client):
+    html = client.get("/").text
+    js = client.get("/app.js").text
+    assert "Company quality" not in html
+    assert "Portfolio manager rating (legacy)" in html
+    assert "Trader proposal (legacy)" in html
+    assert "const hasGovernedDecision" in js
+    assert "legacyDraftRatingGroup.hidden = hasGovernedDecision;" in js
+    assert "legacyTraderActionGroup.hidden = hasGovernedDecision;" in js
+    assert js.index("manifest.entry_decision") < js.index("finalDecision.hidden = false")
+    assert js.index("manifest.position_decision") < js.index("finalDecision.hidden = false")
+
+
+@pytest.mark.unit
+def test_candidate_and_compare_prefer_governed_decision(client):
+    html = client.get("/").text
+    js = client.get("/app.js").text
+    assert html.count("<th>Decision</th>") == 2
+    assert html.count("<th>Portfolio Manager Rating</th>") == 2
+    assert "function formatCandidateDecision(candidate)" in js
+    start = js.index("function formatCandidateDecision(candidate)")
+    block = js[start:js.index("// Shared by", start)]
+    assert block.index("candidate.entryDecision") < block.index("candidate.positionDecision")
+    assert block.index("candidate.positionDecision") < block.index("candidate.traderAction")
+    assert js.count("formatCandidateDecision(candidate)") == 3
+    assert "candidate.entryDecision = snapshot.manifest.entry_decision;" in js
+    assert "candidate.positionDecision = snapshot.manifest.position_decision;" in js

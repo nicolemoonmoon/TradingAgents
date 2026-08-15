@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from tradingagents.agents.schemas import ResearchPlan, render_research_plan
 from tradingagents.agents.utils.agent_utils import (
+    get_evidence_scope_instruction,
     get_instrument_context_from_state,
     get_language_instruction,
 )
@@ -19,6 +20,7 @@ def create_research_manager(llm):
 
     def research_manager_node(state) -> dict:
         instrument_context = get_instrument_context_from_state(state)
+        evidence_scope = get_evidence_scope_instruction(state)
         history = state["investment_debate_state"].get("history", "")
 
         investment_debate_state = state["investment_debate_state"]
@@ -30,6 +32,8 @@ def create_research_manager(llm):
             grounding_prefix = active + "\n\n---\n\n"
 
         prompt = grounding_prefix + f"""As the Research Manager and debate facilitator, your role is to critically evaluate this round of debate and deliver a clear, actionable investment plan for the trader.
+
+{evidence_scope}
 
 {instrument_context}
 

@@ -343,6 +343,14 @@ class StreamingDeepSeekAnalysisRunner:
                 position_context_available=False,
                 data_quality_assessment="not_available",
                 data_quality_flags=fields.data_quality_flags,
+                entry_decision=fields.entry_decision,
+                why_wait=fields.why_wait,
+                what_needs_to_change=fields.what_needs_to_change,
+                recheck_trigger=fields.recheck_trigger,
+                review_due=fields.review_due,
+                execution_availability=fields.execution_availability,
+                position_decision=fields.position_decision,
+                exit_reason=fields.exit_reason,
                 strategy_profile=strategy_profile,
             )
             write_analysis_manifest(run_dir, manifest, overwrite=False)

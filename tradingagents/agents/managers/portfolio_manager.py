@@ -21,6 +21,7 @@ from tradingagents.agents.schemas import (
     validate_position_decision,
 )
 from tradingagents.agents.utils.agent_utils import (
+    get_evidence_scope_instruction,
     get_instrument_context_from_state,
     get_language_instruction,
 )
@@ -97,6 +98,7 @@ def create_portfolio_manager(llm):
 
     def portfolio_manager_node(state) -> dict:
         instrument_context = get_instrument_context_from_state(state)
+        evidence_scope = get_evidence_scope_instruction(state)
 
         history = state["risk_debate_state"]["history"]
         risk_debate_state = state["risk_debate_state"]
@@ -111,6 +113,8 @@ def create_portfolio_manager(llm):
         )
 
         prompt = f"""As the Portfolio Manager, synthesize the risk analysts' debate and deliver the final trading decision.
+
+{evidence_scope}
 
 {instrument_context}
 

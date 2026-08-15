@@ -895,3 +895,149 @@ class TestGovernedPositionFailClosed:
         finally:
             clear_governed_decision_context(outer)
         assert get_governed_decision_context() == {}
+
+
+# ---------------------------------------------------------------------------
+# Step 1 live-acceptance bounded repair: A8/A9 evidence discipline.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_market_only_evidence_scope_marks_other_domains_not_evaluated():
+    from tradingagents.agents.utils.agent_utils import get_evidence_scope_instruction
+
+    instruction = get_evidence_scope_instruction(
+        {
+            "market_report": "verified technical evidence",
+            "fundamentals_report": "",
+            "sentiment_report": "",
+            "news_report": "",
+        }
+    )
+    assert "Evaluated in this run: Market." in instruction
+    assert "Not evaluated in this run: Fundamentals, Sentiment, News." in instruction
+    assert "Do not fill it from pretrained/model memory" in instruction
+    assert "may be used as derived reasoning" in instruction
+    assert "do not introduce or strengthen a company-specific factual claim" in instruction
+    assert "must not drive the decision" in instruction
+
+
+def _market_only_downstream_state():
+    return {
+        "company_of_interest": "NVDA",
+        "asset_type": "stock",
+        "market_report": "verified technical evidence",
+        "fundamentals_report": "",
+        "sentiment_report": "",
+        "news_report": "",
+        "investment_plan": "**Recommendation**: Hold",
+        "trader_investment_plan": "**Action**: Hold",
+        "investment_debate_state": {
+            "history": "",
+            "bull_history": "",
+            "bear_history": "",
+            "current_response": "",
+            "judge_decision": "",
+            "count": 0,
+        },
+        "risk_debate_state": {
+            "history": "",
+            "aggressive_history": "",
+            "conservative_history": "",
+            "neutral_history": "",
+            "current_aggressive_response": "",
+            "current_conservative_response": "",
+            "current_neutral_response": "",
+            "judge_decision": "",
+            "latest_speaker": "",
+            "count": 0,
+        },
+    }
+
+
+def _assert_market_only_scope(prompt_text: str):
+    assert "CURRENT-RUN EVIDENCE SCOPE" in prompt_text
+    assert "Evaluated in this run: Market." in prompt_text
+    assert "Not evaluated in this run: Fundamentals, Sentiment, News." in prompt_text
+    assert "Do not fill it from pretrained/model memory" in prompt_text
+    assert "may be used as derived reasoning" in prompt_text
+    assert "do not introduce or strengthen a company-specific factual claim" in prompt_text
+
+
+@pytest.mark.unit
+def test_all_downstream_runtime_prompts_receive_shared_evidence_scope():
+    from tradingagents.agents.managers.portfolio_manager import create_portfolio_manager
+    from tradingagents.agents.researchers.bear_researcher import create_bear_researcher
+    from tradingagents.agents.researchers.bull_researcher import create_bull_researcher
+    from tradingagents.agents.risk_mgmt.aggressive_debator import (
+        create_aggressive_debator,
+    )
+    from tradingagents.agents.risk_mgmt.conservative_debator import (
+        create_conservative_debator,
+    )
+    from tradingagents.agents.risk_mgmt.neutral_debator import create_neutral_debator
+
+    state = _market_only_downstream_state()
+
+    direct_factories = (
+        ("bull", create_bull_researcher),
+        ("bear", create_bear_researcher),
+        ("aggressive", create_aggressive_debator),
+        ("conservative", create_conservative_debator),
+        ("neutral", create_neutral_debator),
+    )
+    direct_prompts = {}
+    for name, factory in direct_factories:
+        llm = MagicMock()
+        captured = {}
+        llm.invoke.side_effect = lambda prompt, c=captured: (
+            c.__setitem__("prompt", prompt) or MagicMock(content="bounded")
+        )
+        factory(llm)(state)
+        _assert_market_only_scope(captured["prompt"])
+        direct_prompts[name] = captured["prompt"]
+
+    assert "do not manufacture a bull case from unselected evidence domains" in direct_prompts["bull"]
+    assert "do not manufacture a bear case from unselected evidence domains" in direct_prompts["bear"]
+    assert "Use the provided market data and sentiment analysis" not in direct_prompts["aggressive"]
+    assert "only to the extent supported by evaluated current-run evidence" in direct_prompts["conservative"]
+    assert "otherwise label them as scenarios or unknowns rather than facts" in direct_prompts["neutral"]
+
+    rm_captured = {}
+    create_research_manager(_structured_rm_llm(rm_captured))(state)
+    _assert_market_only_scope(rm_captured["prompt"])
+
+    trader_captured = {}
+    create_trader(_structured_trader_llm(trader_captured))(state)
+    trader_prompt = "\n".join(message["content"] for message in trader_captured["prompt"])
+    _assert_market_only_scope(trader_prompt)
+    assert "macroeconomic indicators, and social media sentiment" not in trader_prompt
+    assert "do not assume unselected domains were analyzed" in trader_prompt
+
+    pm_captured = {}
+    structured = MagicMock()
+    structured.invoke.side_effect = lambda prompt: (
+        pm_captured.__setitem__("prompt", prompt)
+        or PortfolioDecision(
+            rating=PortfolioRating.HOLD,
+            executive_summary="Wait for better evidence.",
+            investment_thesis="Only current-run evidence may drive the decision.",
+        )
+    )
+    pm_llm = MagicMock()
+    pm_llm.with_structured_output.return_value = structured
+    create_portfolio_manager(pm_llm)(state)
+    _assert_market_only_scope(pm_captured["prompt"])
+
+
+@pytest.mark.unit
+def test_market_analyst_can_abstain_from_subjective_chart_pattern_names():
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "tradingagents/agents/analysts/market_analyst.py"
+    ).read_text(encoding="utf-8")
+    assert "prefer directly observed price geometry over forcing a named pattern" in source
+    assert "pattern and direction are unconfirmed" in source
+    assert "subjective chart-pattern naming" in source

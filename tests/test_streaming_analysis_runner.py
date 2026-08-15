@@ -17,7 +17,14 @@ from datetime import datetime, timezone
 import pytest
 from pydantic import ValidationError
 
-from tradingagents.agents.schemas import PortfolioRating, TraderAction
+from tradingagents.agents.schemas import (
+    EntryDecision,
+    ExecutionAvailability,
+    ExitReason,
+    PortfolioRating,
+    PositionDecision,
+    TraderAction,
+)
 from tradingagents.run_artifact_writer import append_run_event, write_run_status
 from tradingagents.run_contract import (
     ANALYSIS_MANIFEST_FILENAME,
@@ -594,3 +601,67 @@ def test_run_strategy_profile_does_not_affect_selected_agents_or_config():
         assert manifest1.deep_model == manifest2.deep_model
         assert manifest1.draft_rating == manifest2.draft_rating
         assert manifest1.trader_action == manifest2.trader_action
+
+
+# ---------------------------------------------------------------------------
+# Step 1 A7 streaming-manifest governed-field transport closure.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_streaming_runner_transports_governed_report_fields_into_manifest(tmp_path):
+    chunks = _default_chunks()
+
+    governed_trader = (
+        "**Action**: Hold\n\n"
+        "**Reasoning**: Wait for confirmation.\n\n"
+        "**Stop Loss**: 83.0\n\n"
+        "**Position Sizing**: Reduce to 50%\n\n"
+        "**Entry Decision**: WAIT\n\n"
+        "**Execution Availability**: AVAILABLE\n\n"
+        "**Why Wait**: extended above the entry zone\n\n"
+        "**What Needs To Change**: pull back to support\n\n"
+        "**Recheck Trigger**: daily close below 20 SMA\n\n"
+        "**Review Due**: 2026-08-20\n\n"
+        "FINAL TRANSACTION PROPOSAL: **HOLD**"
+    )
+
+    for idx in range(5, len(chunks)):
+        chunks[idx] = {**chunks[idx], "trader_investment_plan": governed_trader}
+
+    chunks[-1] = {
+        **chunks[-1],
+        "risk_debate_state": {
+            **chunks[-1]["risk_debate_state"],
+            "judge_decision": (
+                "**Rating**: Sell\n\n"
+                "**Executive Summary**: Exit.\n\n"
+                "**Investment Thesis**: Thesis broken.\n\n"
+                "**Time Horizon**: immediate\n\n"
+                "**Position Decision**: SELL\n\n"
+                "**Exit Reason**: THESIS_BROKEN"
+            ),
+        },
+    }
+
+    graph = _FakeGraph(_config(), chunks=chunks)
+    runner = StreamingDeepSeekAnalysisRunner(
+        graph, runs_dir=tmp_path, clock=_fixed_clock
+    )
+    manifest, _status = runner.run("AAPL", "2026-07-03")
+
+    assert manifest.entry_decision == EntryDecision.WAIT
+    assert manifest.execution_availability == ExecutionAvailability.AVAILABLE
+    assert manifest.why_wait == "extended above the entry zone"
+    assert manifest.what_needs_to_change == "pull back to support"
+    assert manifest.recheck_trigger == "daily close below 20 SMA"
+    assert manifest.review_due == "2026-08-20"
+    assert manifest.position_decision == PositionDecision.SELL
+    assert manifest.exit_reason == ExitReason.THESIS_BROKEN
+
+    manifest_path = tmp_path / manifest.run_id / ANALYSIS_MANIFEST_FILENAME
+    persisted = manifest_path.read_text(encoding="utf-8")
+    assert '"entry_decision":"WAIT"' in persisted
+    assert '"execution_availability":"AVAILABLE"' in persisted
+    assert '"position_decision":"SELL"' in persisted
+    assert '"exit_reason":"THESIS_BROKEN"' in persisted

@@ -137,8 +137,8 @@
               <th>Company / Ticker</th>
               <th>Strategy Profile</th>
               <th>Status</th>
-              <th>Trader Action</th>
-              <th>Draft Rating</th>
+              <th>Decision</th>
+              <th>Portfolio Manager Rating</th>
               <th>Data Quality Flags</th>
               <th>Scanner Provenance</th>
               <th></th>
@@ -168,8 +168,8 @@
               <th>Company / Ticker</th>
               <th>Strategy Profile</th>
               <th>Run Status</th>
-              <th>Trader Action</th>
-              <th>Draft Rating</th>
+              <th>Decision</th>
+              <th>Portfolio Manager Rating</th>
               <th>Data Quality Flags</th>
               <th>Scanner Provenance</th>
               <th>Catalyst Quality</th>
@@ -270,13 +270,13 @@
 
       <div id="final-decision" hidden>
         <h3>Final decision</h3>
-        <div class="decision-group">
-          <h4>Company quality</h4>
-          <p>Draft rating: <span id="draft-rating-label"></span></p>
+        <div class="decision-group" id="legacy-draft-rating-group">
+          <h4>Portfolio manager rating (legacy)</h4>
+          <p>Legacy rating: <span id="draft-rating-label"></span></p>
         </div>
-        <div class="decision-group">
-          <h4>Trader action</h4>
-          <p>Trader action: <span id="trader-action-label"></span></p>
+        <div class="decision-group" id="legacy-trader-action-group">
+          <h4>Trader proposal (legacy)</h4>
+          <p>Legacy action: <span id="trader-action-label"></span></p>
         </div>
         <div class="decision-group">
           <h4>Data quality</h4>

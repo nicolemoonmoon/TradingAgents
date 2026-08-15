@@ -18,6 +18,7 @@
   const compareBoard = el("compare-board");
   const scannerBoard = el("scanner-board");
   const startButton = el("start-button");
+  const analysisDateInput = el("analysis-date-input");
   const resetButton = el("reset-button");
   const loadRunButton = el("load-run-button");
   const runIdInput = el("run-id-input");
@@ -34,6 +35,8 @@
   const eventTimeline = el("event-timeline");
   const agentList = el("agent-list");
   const finalDecision = el("final-decision");
+  const legacyDraftRatingGroup = el("legacy-draft-rating-group");
+  const legacyTraderActionGroup = el("legacy-trader-action-group");
   const traderActionLabel = el("trader-action-label");
   const draftRatingLabel = el("draft-rating-label");
   const dataQualityFlagsLabel = el("data-quality-flags-label");
@@ -49,6 +52,18 @@
   const positionDecisionGroup = el("position-decision-group");
   const positionDecisionLabel = el("position-decision-label");
   const exitReasonLabel = el("exit-reason-label");
+
+  function localTodayISO() {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, "0");
+    const day = String(now.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  }
+
+  if (!analysisDateInput.value) {
+    analysisDateInput.value = localTodayISO();
+  }
 
   let pollTimer = null;
   // Which run_id (if any) has been started/loaded this session. #run-view
@@ -252,6 +267,11 @@
     dataQualityFlagsLabel.textContent = formatDataQualityFlags(manifest.data_quality_flags);
     reportLink.href = `/api/runs/${encodeURIComponent(runId)}/reports/complete_report`;
 
+    const hasGovernedDecision =
+      manifest.entry_decision != null || manifest.position_decision != null;
+    legacyDraftRatingGroup.hidden = hasGovernedDecision;
+    legacyTraderActionGroup.hidden = hasGovernedDecision;
+
     // Governed entry decision (NOT_HELD semantics: BUY | WAIT | REVIEW) and
     // its WAIT rationale -- rendered only when the optional field is present,
     // never merged into the draft rating / trader action groups.
@@ -342,15 +362,31 @@
     };
   }
 
+  function formatCandidateDecision(candidate) {
+    if (candidate.entryDecision != null) {
+      return `Entry: ${formatStatusLabel(candidate.entryDecision)}`;
+    }
+    if (candidate.positionDecision != null) {
+      return `Position: ${formatStatusLabel(candidate.positionDecision)}`;
+    }
+    return candidate.traderAction != null
+      ? `Legacy: ${formatStatusLabel(candidate.traderAction)}`
+      : "—";
+  }
+
   // Shared by "Start new analysis" and Candidate Board: every analysis
   // entry point uses the same run settings, only the ticker differs.
   function buildAnalysisPayload(ticker, origin) {
+    const analysisDate = analysisDateInput.value;
+    if (!analysisDate) {
+      throw new Error("Analysis date is required.");
+    }
     const strategyProfileValue = el("strategy-profile-input").value.trim();
     const quickValue = el("quick-model-input").value.trim();
     const deepValue = el("deep-model-input").value.trim();
     const payload = {
       ticker,
-      analysis_date: el("analysis-date-input").value,
+      analysis_date: analysisDate,
       selected_analysts: collectSelectedAnalysts(),
       quick_model: quickValue || null,
       deep_model: deepValue || null,
@@ -527,6 +563,8 @@
         analysisStatus: null,
         strategyProfile: null,
         traderAction: null,
+        entryDecision: null,
+        positionDecision: null,
         draftRating: null,
         dataQualityFlags: null,
         errorMessage: null,
@@ -573,7 +611,7 @@
         formatIdentity(candidate),
         formatCandidateStrategyProfile(candidate),
         candidate.analysisStatus ?? "not run",
-        candidate.traderAction ?? "—",
+        formatCandidateDecision(candidate),
         candidate.draftRating ?? "—",
         formatDataQualityFlags(candidate.dataQualityFlags),
         formatProvenance(candidate.provenance),
@@ -627,6 +665,8 @@
       candidate.strategyProfile = snapshot.status.strategy_profile ?? candidate.strategyProfile;
       if (snapshot.manifest) {
         candidate.traderAction = snapshot.manifest.trader_action;
+        candidate.entryDecision = snapshot.manifest.entry_decision;
+        candidate.positionDecision = snapshot.manifest.position_decision;
         candidate.draftRating = snapshot.manifest.draft_rating;
         candidate.dataQualityFlags = snapshot.manifest.data_quality_flags;
       }
@@ -715,7 +755,7 @@
         formatIdentity(candidate),
         formatCandidateStrategyProfile(candidate),
         candidate.analysisStatus ?? "not run",
-        candidate.traderAction ?? "—",
+        formatCandidateDecision(candidate),
         candidate.draftRating ?? "—",
         formatDataQualityFlags(candidate.dataQualityFlags),
         formatProvenance(candidate.provenance),
@@ -808,6 +848,8 @@
       analysisStatus: null,
       strategyProfile: null,
       traderAction: null,
+      entryDecision: null,
+      positionDecision: null,
       draftRating: null,
       dataQualityFlags: null,
       errorMessage: null,

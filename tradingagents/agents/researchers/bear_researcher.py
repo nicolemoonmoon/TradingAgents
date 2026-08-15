@@ -1,4 +1,5 @@
 from tradingagents.agents.utils.agent_utils import (
+    get_evidence_scope_instruction,
     get_instrument_context_from_state,
     get_language_instruction,
 )
@@ -16,6 +17,7 @@ def create_bear_researcher(llm):
         news_report = state["news_report"]
         fundamentals_report = state["fundamentals_report"]
         instrument_context = get_instrument_context_from_state(state)
+        evidence_scope = get_evidence_scope_instruction(state)
         asset_type = state.get("asset_type", "stock")
         target_label = "stock" if asset_type == "stock" else "asset"
         fundamentals_label = (
@@ -24,17 +26,19 @@ def create_bear_researcher(llm):
             else "Asset fundamentals report (may be unavailable for crypto)"
         )
 
-        prompt = f"""You are a Bear Analyst making the case against investing in the {target_label}. Your goal is to present a well-reasoned argument emphasizing risks, challenges, and negative indicators. Leverage the provided research and data to highlight potential downsides and counter bullish arguments effectively.
+        prompt = f"""You are a Bear Analyst making the case against investing in the {target_label}. Build the strongest evidence-based bear case that the current run actually supports; do not manufacture a bear case from unselected evidence domains. Leverage the provided research and data to highlight potential downsides and counter bullish arguments effectively.
 
-Key points to focus on:
+Key points to focus on, only when supported by evaluated current-run evidence:
 
-- Risks and Challenges: Highlight factors like market saturation, financial instability, or macroeconomic threats that could hinder the stock's performance.
-- Competitive Weaknesses: Emphasize vulnerabilities such as weaker market positioning, declining innovation, or threats from competitors.
-- Negative Indicators: Use evidence from financial data, market trends, or recent adverse news to support your position.
+- Risks and Challenges: Discuss market saturation, financial instability, or macroeconomic threats only when current-run evidence supports them; otherwise state that they were not evaluated.
+- Competitive Weaknesses: Discuss market positioning, innovation, or competitor threats only when current-run evidence supports them; otherwise state that they were not evaluated.
+- Negative Indicators: Use only evaluated financial, market, sentiment, or news evidence; do not infer missing-domain facts.
 - Bull Counterpoints: Critically analyze the bull argument with specific data and sound reasoning, exposing weaknesses or over-optimistic assumptions.
 - Engagement: Present your argument in a conversational style, directly engaging with the bull analyst's points and debating effectively rather than simply listing facts.
 
 Resources available:
+
+{evidence_scope}
 
 {instrument_context}
 Market research report: {market_research_report}
