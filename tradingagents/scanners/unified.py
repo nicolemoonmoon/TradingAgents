@@ -6,6 +6,7 @@ ranking, routing, persistence, model work, or Technology selection work.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 from collections.abc import Mapping, Sequence
@@ -19,7 +20,9 @@ from tradingagents.scanners.pradeep import PradeepEvidenceRef, PradeepScanResult
 from tradingagents.scanners.traditional import (
     Gate,
     GateStatus,
+    ScanRequest,
     TraditionalScanResult,
+    compile_traditional_scan,
 )
 
 E02_SCHEMA_VERSION = "1.0.0"
@@ -38,6 +41,14 @@ class SelectionSystem(str, Enum):
     TRADITIONAL = "TRADITIONAL"
     PRADEEP = "PRADEEP"
     TECHNOLOGY = "TECHNOLOGY"
+
+
+class AnalysisPurpose(str, Enum):
+    """Frozen analysis-purpose taxonomy (FZ-SEL-001)."""
+
+    BASELINE_SYSTEM = "BASELINE_SYSTEM"
+    EXPLORATORY_COMPARE = "EXPLORATORY_COMPARE"
+    OWNER_MANUAL_REVIEW = "OWNER_MANUAL_REVIEW"
 
 
 def _string(
@@ -644,3 +655,549 @@ def validate_unified_candidate(
     if not isinstance(value, Mapping):
         raise UnifiedCandidateError("candidate must be UnifiedCandidate or object")
     return UnifiedCandidate.from_mapping(value)
+
+
+@dataclass(frozen=True, slots=True)
+class SelectionRecordRef:
+    """The exact E02 selection that produced a governed analysis origin.
+
+    ``selection_system`` is the producing system (FZ-SEL-002).  A baseline
+    analysis is only legitimate when this system equals the consuming
+    ``system_scope``.
+    """
+
+    selection_id: str
+    selection_system: SelectionSystem
+    company_id: str | None = None
+
+    def __post_init__(self) -> None:
+        _string(self.selection_id, "selection_id", minimum=1, maximum=160)
+        try:
+            system = SelectionSystem(self.selection_system)
+        except (TypeError, ValueError) as exc:
+            raise UnifiedCandidateError("selection_system is not allowed by E02") from exc
+        object.__setattr__(self, "selection_system", system)
+        _nullable_string(self.company_id, "company_id", minimum=1, maximum=160)
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, object]) -> SelectionRecordRef:
+        required = frozenset({"selection_id", "selection_system", "company_id"})
+        _exact_keys(value, "selection_record_ref", required)
+        return cls(
+            selection_id=value["selection_id"],  # type: ignore[arg-type]
+            selection_system=value["selection_system"],  # type: ignore[arg-type]
+            company_id=value["company_id"],  # type: ignore[arg-type]
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "selection_id": self.selection_id,
+            "selection_system": self.selection_system.value,
+            "company_id": self.company_id,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class SharedFact:
+    """A methodology-neutral fact that MAY be shared across systems (FZ-DATA-002).
+
+    The frozen field set is intentionally free of every methodology field
+    (no selection_score / setup_score / *_score / *_conclusion /
+    entry_recommendation / position_recommendation / methodology_weight /
+    methodology_rank).  This neutrality is structural, not documented-only.
+    """
+
+    fact_id: str
+    fact_type: str
+    fact: str
+    source_refs: tuple[str, ...]
+    data_as_of: str | None
+    provenance: str
+
+    def __post_init__(self) -> None:
+        _string(self.fact_id, "fact_id", minimum=1, maximum=160)
+        _string(self.fact_type, "fact_type", minimum=1, maximum=80)
+        _string(self.fact, "fact", minimum=1, maximum=8000)
+        if not isinstance(self.source_refs, tuple) or not self.source_refs:
+            raise UnifiedCandidateError("shared fact requires source_refs")
+        for ref in self.source_refs:
+            _string(ref, "source_refs", minimum=1, maximum=1000)
+        _nullable_string(self.data_as_of, "shared_fact.data_as_of", maximum=64)
+        _string(self.provenance, "shared_fact.provenance", minimum=1, maximum=2000)
+
+
+@dataclass(frozen=True, slots=True)
+class SystemEvidenceClaim:
+    """A system-scoped derived claim (FZ-DATA-003).
+
+    Must only be consumed by the system named in ``system_scope``; any other
+    system reading it is a cross-system contamination.
+    """
+
+    claim_id: str
+    system_scope: SelectionSystem
+    claim_type: str
+    fact_refs: tuple[str, ...]
+    claim: str
+    confidence: str
+    methodology_rule_refs: tuple[str, ...]
+    data_as_of: str | None
+    provenance: str
+
+    def __post_init__(self) -> None:
+        _string(self.claim_id, "claim_id", minimum=1, maximum=160)
+        try:
+            scope = SelectionSystem(self.system_scope)
+        except (TypeError, ValueError) as exc:
+            raise UnifiedCandidateError("claim system_scope is not allowed by E02") from exc
+        object.__setattr__(self, "system_scope", scope)
+        _string(self.claim_type, "claim_type", minimum=1, maximum=80)
+        if not isinstance(self.fact_refs, tuple):
+            raise UnifiedCandidateError("claim fact_refs must be a tuple")
+        for ref in self.fact_refs:
+            _string(ref, "fact_refs", minimum=1, maximum=160)
+        _string(self.claim, "claim", minimum=1, maximum=8000)
+        _string(self.confidence, "claim confidence", minimum=1, maximum=64)
+        for ref in self.methodology_rule_refs:
+            _string(ref, "methodology_rule_refs", minimum=1, maximum=160)
+        _nullable_string(self.data_as_of, "claim.data_as_of", maximum=64)
+        _string(self.provenance, "claim provenance", minimum=1, maximum=2000)
+
+    def require_system_scope(self, consuming_system: SelectionSystem) -> None:
+        """Fail closed if a foreign system tries to consume this claim."""
+        if self.system_scope is not consuming_system:
+            raise UnifiedCandidateError(
+                "CROSS_SYSTEM_CONTAMINATION: claim "
+                f"{self.claim_id!r} is scoped to {self.system_scope.value!r}, "
+                f"not {consuming_system.value!r}"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class SystemAnalysisSnapshot:
+    """A system-scoped, E02-bound analysis snapshot (FZ-DATA-005)."""
+
+    snapshot_id: str
+    system_scope: SelectionSystem
+    methodology_version: str
+    data_as_of: str | None
+    candidate_ref: str
+    selection_record_ref: SelectionRecordRef | None
+    analysis_purpose: AnalysisPurpose
+    portfolio_eligible: bool
+    shared_fact_refs: tuple[str, ...]
+    system_evidence_claim_refs: tuple[str, ...]
+    provenance_refs: tuple[str, ...]
+    payload_type: str
+    payload_hash: str
+
+    def __post_init__(self) -> None:
+        _string(self.snapshot_id, "snapshot_id", minimum=1, maximum=160)
+        try:
+            scope = SelectionSystem(self.system_scope)
+        except (TypeError, ValueError) as exc:
+            raise UnifiedCandidateError("snapshot system_scope is not allowed by E02") from exc
+        object.__setattr__(self, "system_scope", scope)
+        _string(self.methodology_version, "methodology_version", minimum=1, maximum=80)
+        _nullable_string(self.data_as_of, "snapshot.data_as_of", maximum=64)
+        _string(self.candidate_ref, "candidate_ref", minimum=1, maximum=160)
+        if self.selection_record_ref is not None and not isinstance(
+            self.selection_record_ref, SelectionRecordRef
+        ):
+            raise UnifiedCandidateError("selection_record_ref must be SelectionRecordRef or null")
+        try:
+            purpose = AnalysisPurpose(self.analysis_purpose)
+        except (TypeError, ValueError) as exc:
+            raise UnifiedCandidateError("analysis_purpose is not allowed") from exc
+        object.__setattr__(self, "analysis_purpose", purpose)
+        if not isinstance(self.portfolio_eligible, bool):
+            raise UnifiedCandidateError("portfolio_eligible must be boolean")
+        for ref in self.shared_fact_refs:
+            _string(ref, "shared_fact_refs", minimum=1, maximum=160)
+        for ref in self.system_evidence_claim_refs:
+            _string(ref, "system_evidence_claim_refs", minimum=1, maximum=160)
+        for ref in self.provenance_refs:
+            _string(ref, "provenance_refs", minimum=1, maximum=160)
+        _string(self.payload_type, "payload_type", minimum=1, maximum=120)
+        _string(self.payload_hash, "payload_hash", minimum=1, maximum=128)
+        # Baseline eligibility: selection origin must match the consuming system.
+        if purpose is AnalysisPurpose.BASELINE_SYSTEM:
+            if self.selection_record_ref is None:
+                raise UnifiedCandidateError(
+                    "a baseline snapshot requires a selection_record_ref"
+                )
+            if self.selection_record_ref.selection_system is not scope:
+                raise UnifiedCandidateError(
+                    "baseline selection origin does not match snapshot system_scope"
+                )
+            if not self.portfolio_eligible:
+                raise UnifiedCandidateError("a baseline snapshot must be portfolio_eligible")
+        elif self.portfolio_eligible:
+            raise UnifiedCandidateError(
+                "only a baseline snapshot may be portfolio_eligible"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class SystemPortfolioContext:
+    """A system-scoped portfolio context (FZ-PCTX-001).
+
+    The minimum semantic representation of a same-system portfolio context
+    reused by current contracts. Positions/exposures/risk metrics stay
+    opaque references because no portfolio engine is authorized; the frozen
+    semantic is the ``system_scope``, which makes foreign-context rejection
+    mechanically checkable.
+    """
+
+    portfolio_context_id: str
+    system_scope: SelectionSystem
+    as_of: str | None
+    cash: str | None = None
+    positions: str | None = None
+    exposures: str | None = None
+    risk_metrics: str | None = None
+    source_portfolio_id: str | None = None
+
+    def __post_init__(self) -> None:
+        _string(self.portfolio_context_id, "portfolio_context_id", minimum=1, maximum=160)
+        try:
+            scope = SelectionSystem(self.system_scope)
+        except (TypeError, ValueError) as exc:
+            raise UnifiedCandidateError("portfolio context system_scope is not allowed") from exc
+        object.__setattr__(self, "system_scope", scope)
+        _nullable_string(self.as_of, "portfolio_context.as_of", maximum=64)
+        _nullable_string(self.cash, "portfolio_context.cash", maximum=1000)
+        _nullable_string(self.positions, "portfolio_context.positions", maximum=8000)
+        _nullable_string(self.exposures, "portfolio_context.exposures", maximum=8000)
+        _nullable_string(self.risk_metrics, "portfolio_context.risk_metrics", maximum=8000)
+        _nullable_string(
+            self.source_portfolio_id, "portfolio_context.source_portfolio_id", maximum=160
+        )
+
+    def require_system_scope(self, consuming_system: SelectionSystem) -> None:
+        """Fail closed if a foreign system tries to consume this context."""
+        if self.system_scope is not consuming_system:
+            raise UnifiedCandidateError(
+                "CROSS_SYSTEM_CONTAMINATION: portfolio context "
+                f"{self.portfolio_context_id!r} is scoped to {self.system_scope.value!r}, "
+                f"not {consuming_system.value!r}"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class SystemDecisionEvent:
+    """A lean, system-scoped, E02-bound decision record (FZ-EVT-001).
+
+    References its analysis snapshot by id + hash; it does not duplicate the
+    full analysis rationale.
+    """
+
+    decision_id: str
+    system_scope: SelectionSystem
+    unified_candidate_ref: str
+    selection_record_ref: SelectionRecordRef | None
+    analysis_purpose: AnalysisPurpose
+    portfolio_eligible: bool
+    decision_time: str
+    data_as_of: str | None
+    position_state_at_decision: str
+    action_intent: str
+    methodology_decision_code: str
+    reason_summary: str
+    analysis_snapshot_ref: str
+    analysis_snapshot_hash: str
+    execution_availability: str | None = None
+    reference_market_price: float | None = None
+    portfolio_context_ref: SystemPortfolioContext | None = None
+    approved_position_size_or_target_weight: str | None = None
+    recheck_trigger: str | None = None
+    review_due: str | None = None
+
+    def __post_init__(self) -> None:
+        _string(self.decision_id, "decision_id", minimum=1, maximum=160)
+        try:
+            scope = SelectionSystem(self.system_scope)
+        except (TypeError, ValueError) as exc:
+            raise UnifiedCandidateError("decision system_scope is not allowed by E02") from exc
+        object.__setattr__(self, "system_scope", scope)
+        _string(self.unified_candidate_ref, "unified_candidate_ref", minimum=1, maximum=160)
+        if self.selection_record_ref is not None and not isinstance(
+            self.selection_record_ref, SelectionRecordRef
+        ):
+            raise UnifiedCandidateError("selection_record_ref must be SelectionRecordRef or null")
+        try:
+            purpose = AnalysisPurpose(self.analysis_purpose)
+        except (TypeError, ValueError) as exc:
+            raise UnifiedCandidateError("analysis_purpose is not allowed") from exc
+        object.__setattr__(self, "analysis_purpose", purpose)
+        if not isinstance(self.portfolio_eligible, bool):
+            raise UnifiedCandidateError("portfolio_eligible must be boolean")
+        _string(self.decision_time, "decision_time", minimum=1, maximum=64)
+        _nullable_string(self.data_as_of, "decision.data_as_of", maximum=64)
+        _string(self.position_state_at_decision, "position_state_at_decision", minimum=1, maximum=32)
+        _string(self.action_intent, "action_intent", minimum=1, maximum=32)
+        _string(self.methodology_decision_code, "methodology_decision_code", minimum=1, maximum=120)
+        _string(self.reason_summary, "reason_summary", minimum=1, maximum=4000)
+        _string(self.analysis_snapshot_ref, "analysis_snapshot_ref", minimum=1, maximum=160)
+        _string(self.analysis_snapshot_hash, "analysis_snapshot_hash", minimum=1, maximum=128)
+        _nullable_string(self.execution_availability, "execution_availability", maximum=32)
+        if self.reference_market_price is not None and not math.isfinite(
+            self.reference_market_price
+        ):
+            raise UnifiedCandidateError("reference_market_price must be finite")
+        if self.portfolio_context_ref is not None and not isinstance(
+            self.portfolio_context_ref, SystemPortfolioContext
+        ):
+            raise UnifiedCandidateError(
+                "portfolio_context_ref must be a SystemPortfolioContext or null"
+            )
+        if self.portfolio_context_ref is not None and (
+            self.portfolio_context_ref.system_scope is not scope
+        ):
+            raise UnifiedCandidateError(
+                "CROSS_SYSTEM_CONTAMINATION: decision "
+                f"{self.decision_id!r} is scoped to {scope.value!r} but its "
+                f"portfolio context {self.portfolio_context_ref.portfolio_context_id!r} "
+                f"is scoped to {self.portfolio_context_ref.system_scope.value!r}"
+            )
+        _nullable_string(
+            self.approved_position_size_or_target_weight,
+            "approved_position_size_or_target_weight",
+            maximum=120,
+        )
+        _nullable_string(self.recheck_trigger, "recheck_trigger", maximum=1000)
+        _nullable_string(self.review_due, "review_due", maximum=64)
+        if purpose is AnalysisPurpose.BASELINE_SYSTEM:
+            if self.selection_record_ref is None:
+                raise UnifiedCandidateError("a baseline decision requires a selection_record_ref")
+            if self.selection_record_ref.selection_system is not scope:
+                raise UnifiedCandidateError(
+                    "baseline selection origin does not match decision system_scope"
+                )
+            if not self.portfolio_eligible:
+                raise UnifiedCandidateError("a baseline decision must be portfolio_eligible")
+        elif self.portfolio_eligible:
+            raise UnifiedCandidateError("only a baseline decision may be portfolio_eligible")
+
+    def require_matches_snapshot(self, snapshot: SystemAnalysisSnapshot) -> None:
+        """Fail closed unless this decision's system and snapshot binding agree."""
+        if not isinstance(snapshot, SystemAnalysisSnapshot):
+            raise UnifiedCandidateError("snapshot must be a SystemAnalysisSnapshot")
+        if self.system_scope is not snapshot.system_scope:
+            raise UnifiedCandidateError(
+                "CROSS_SYSTEM_CONTAMINATION: decision "
+                f"{self.decision_id!r} is scoped to {self.system_scope.value!r} but its "
+                f"snapshot {snapshot.snapshot_id!r} is scoped to {snapshot.system_scope.value!r}"
+            )
+        if self.analysis_snapshot_ref != snapshot.snapshot_id:
+            raise UnifiedCandidateError(
+                "decision snapshot ref does not match the bound snapshot id"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class AnalysisGovernance:
+    """Resolved analysis purpose and portfolio eligibility (FZ-SEL)."""
+
+    analysis_purpose: AnalysisPurpose
+    system_scope: SelectionSystem | None
+    portfolio_eligible: bool
+
+
+def derive_analysis_governance(
+    system_scope: SelectionSystem | str | None,
+    selection_record_ref: SelectionRecordRef | None,
+    analysis_purpose: AnalysisPurpose | str | None,
+) -> AnalysisGovernance:
+    """Resolve purpose + portfolio eligibility, failing closed on ambiguity.
+
+    - No selection origin -> OWNER_MANUAL_REVIEW, portfolio_eligible=False.
+    - EXPLORATORY_COMPARE -> portfolio_eligible=False.
+    - BASELINE_SYSTEM -> requires a selection origin whose selection_system
+      equals the consuming ``system_scope``; only then portfolio_eligible=True.
+    """
+
+    scope: SelectionSystem | None
+    if system_scope is None:
+        scope = None
+    else:
+        try:
+            scope = SelectionSystem(system_scope)
+        except (TypeError, ValueError) as exc:
+            raise UnifiedCandidateError("system_scope is not allowed by E02") from exc
+
+    purpose: AnalysisPurpose
+    if analysis_purpose is None:
+        purpose = (
+            AnalysisPurpose.OWNER_MANUAL_REVIEW
+            if selection_record_ref is None
+            else AnalysisPurpose.BASELINE_SYSTEM
+        )
+    else:
+        try:
+            purpose = AnalysisPurpose(analysis_purpose)
+        except (TypeError, ValueError) as exc:
+            raise UnifiedCandidateError("analysis_purpose is not allowed") from exc
+
+    if selection_record_ref is None:
+        if purpose is not AnalysisPurpose.OWNER_MANUAL_REVIEW:
+            raise UnifiedCandidateError(
+                "a governed purpose requires a selection_record_ref; "
+                "missing origin must fail closed as OWNER_MANUAL_REVIEW"
+            )
+        return AnalysisGovernance(
+            analysis_purpose=AnalysisPurpose.OWNER_MANUAL_REVIEW,
+            system_scope=scope,
+            portfolio_eligible=False,
+        )
+
+    # A selection origin is present: a consuming system_scope is mandatory.
+    if scope is None:
+        raise UnifiedCandidateError(
+            "a selection_record_ref requires an explicit system_scope; "
+            "refusing to infer scope from the selection"
+        )
+    if purpose is AnalysisPurpose.BASELINE_SYSTEM:
+        if selection_record_ref.selection_system is not scope:
+            raise UnifiedCandidateError(
+                "baseline selection origin does not match system_scope; "
+                "refusing to promote a foreign selection to baseline"
+            )
+        return AnalysisGovernance(
+            analysis_purpose=AnalysisPurpose.BASELINE_SYSTEM,
+            system_scope=scope,
+            portfolio_eligible=True,
+        )
+    return AnalysisGovernance(
+        analysis_purpose=purpose,
+        system_scope=scope,
+        portfolio_eligible=False,
+    )
+
+
+def build_traditional_snapshot(
+    result: TraditionalScanResult,
+    selection: UnifiedSelection,
+    selection_record_ref: SelectionRecordRef,
+    *,
+    analysis_purpose: AnalysisPurpose = AnalysisPurpose.BASELINE_SYSTEM,
+    portfolio_eligible: bool = True,
+    data_as_of: str | None = None,
+    snapshot_id: str | None = None,
+    candidate_ref: str | None = None,
+) -> SystemAnalysisSnapshot:
+    """Produce a real Traditional ``SystemAnalysisSnapshot`` at the binding
+    boundary (FZ-DATA-005 / CUR-003).
+
+    This is the smallest existing production boundary with sufficient data:
+    the compiler's ``TraditionalScanResult`` (facts + claims + structural
+    disruption) and the bound ``UnifiedSelection`` (E02 selection identity).
+    The snapshot references the facts/claims the compiler de-duplicated rather
+    than re-deriving them, so correlated evidence is never double counted.
+    """
+    if not isinstance(result, TraditionalScanResult):
+        raise UnifiedCandidateError("result must be TraditionalScanResult")
+    if not isinstance(selection, UnifiedSelection):
+        raise UnifiedCandidateError("selection must be UnifiedSelection")
+    if selection.selection_system is not SelectionSystem.TRADITIONAL:
+        raise UnifiedCandidateError("a Traditional snapshot requires a Traditional selection")
+    if not isinstance(selection_record_ref, SelectionRecordRef):
+        raise UnifiedCandidateError("selection_record_ref must be SelectionRecordRef")
+
+    resolved_snapshot_id = snapshot_id or f"snapshot:{selection.selection_id}"
+    resolved_candidate_ref = candidate_ref or selection_record_ref.company_id or selection.selection_id
+    resolved_data_as_of = data_as_of or selection.data_as_of
+
+    # CUR-008 / FZ-DATA-003: the snapshot consumes the compiler's claims at a
+    # real production boundary — fail closed on any foreign system_scope before
+    # the claim ids are referenced, so a cross-system claim read is mechanically
+    # rejected rather than silently copied.
+    for claim in result.system_evidence_claims:
+        claim.require_system_scope(SelectionSystem.TRADITIONAL)
+
+    # CUR-001: the snapshot payload binds the structural 6Q rationale
+    # (evidence, counter-evidence, falsification, timing, confidence, and
+    # methodology refs), not just its method version, so a candidate's
+    # structural thesis is part of the immutable snapshot identity.
+    sd = result.structural_disruption
+    sd_lines = [sd.method_version]
+    for question in sorted(sd.questions, key=lambda q: q.value):
+        finding = sd.questions[question]
+        sd_lines.extend(
+            [
+                f"{question.value}:{finding.conclusion}",
+                f"evidence:{'|'.join(finding.evidence)}",
+                f"counter:{'|'.join(finding.counter_evidence)}",
+                f"transmission:{finding.economic_transmission or ''}",
+                f"adaptation:{finding.incumbent_adaptation or ''}",
+                f"horizon:{finding.expected_horizon or ''}",
+                f"falsification:{finding.falsification_condition or ''}",
+                f"confidence:{finding.confidence or ''}",
+                f"unknowns:{'|'.join(finding.major_unknowns)}",
+                f"refs:{'|'.join(finding.methodology_rule_refs)}",
+            ]
+        )
+
+    payload_parts = [
+        result.entity,
+        result.candidate_tier or "",
+        "\n".join(sd_lines),
+        ",".join(
+            f"{gate.value}:{result.gate_evaluations[gate].status.value}" for gate in Gate
+        ),
+    ]
+    payload_hash = hashlib.sha256("\n".join(payload_parts).encode("utf-8")).hexdigest()
+
+    return SystemAnalysisSnapshot(
+        snapshot_id=resolved_snapshot_id,
+        system_scope=SelectionSystem.TRADITIONAL,
+        methodology_version=selection.producer_version,
+        data_as_of=resolved_data_as_of,
+        candidate_ref=resolved_candidate_ref,
+        selection_record_ref=selection_record_ref,
+        analysis_purpose=analysis_purpose,
+        portfolio_eligible=portfolio_eligible,
+        shared_fact_refs=tuple(fact.fact_id for fact in result.shared_facts),
+        system_evidence_claim_refs=tuple(
+            claim.claim_id for claim in result.system_evidence_claims
+        ),
+        provenance_refs=tuple(ref.evidence_id for ref in selection.evidence_refs),
+        payload_type="TraditionalAnalysisPayload",
+        payload_hash=payload_hash,
+    )
+
+
+def compile_traditional_candidate(
+    request: ScanRequest,
+    binding: TraditionalSelectionBinding,
+    identity: CompanyIdentityBinding,
+    selection_record_ref: SelectionRecordRef,
+    *,
+    analysis_purpose: AnalysisPurpose = AnalysisPurpose.BASELINE_SYSTEM,
+    portfolio_eligible: bool = True,
+) -> tuple[UnifiedCandidate, SystemAnalysisSnapshot, TraditionalScanResult]:
+    """Drive the real Traditional production path end to end.
+
+    Compiles caller-supplied canonical evidence under the E04 compiler, binds
+    the result to an E02 ``UnifiedSelection``, produces and binds a
+    system-scoped ``SystemAnalysisSnapshot``, and assembles the E02 candidate.
+    This is the single production seam that owns Traditional scanner/analysis
+    integration — it reuses the existing compiler (E04), binder (E09), snapshot
+    builder, and E02 assembly rather than a second candidate schema or runtime.
+    """
+    result = compile_traditional_scan(request)
+    selection = bind_traditional_selection(result, binding)
+    if selection is None:
+        raise UnifiedCandidateError(
+            "Traditional compiler produced no actual G7 candidate selection; "
+            "cannot assemble a candidate or snapshot"
+        )
+    snapshot = build_traditional_snapshot(
+        result,
+        selection,
+        selection_record_ref,
+        analysis_purpose=analysis_purpose,
+        portfolio_eligible=portfolio_eligible,
+    )
+    candidate = assemble_unified_candidate(identity, (selection,))
+    return candidate, snapshot, result

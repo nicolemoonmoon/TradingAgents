@@ -243,13 +243,36 @@
     return { found: true, status, manifest };
   }
 
+  // G5/R3: derive the exact E02 selection origin from the candidate object the
+  // browser already holds (never from the ticker). A single unambiguous
+  // selection is a BASELINE_SYSTEM analysis. A candidate with zero selections
+  // is manual; a candidate with multiple selections (same or different
+  // systems) cannot be disambiguated by the single Analyze button, so it fails
+  // closed to no-origin rather than guessing or defaulting to one system.
+  function deriveSelectionOrigin(candidate) {
+    const selections = candidate.provenance || [];
+    if (selections.length !== 1) {
+      return null;
+    }
+    const selection = selections[0];
+    return {
+      system_scope: selection.selection_system,
+      selection_record_ref: {
+        selection_id: selection.selection_id,
+        selection_system: selection.selection_system,
+        company_id: candidate.companyId,
+      },
+      analysis_purpose: "BASELINE_SYSTEM",
+    };
+  }
+
   // Shared by "Start new analysis" and Candidate Board: every analysis
   // entry point uses the same run settings, only the ticker differs.
-  function buildAnalysisPayload(ticker) {
+  function buildAnalysisPayload(ticker, origin) {
     const strategyProfileValue = el("strategy-profile-input").value.trim();
     const quickValue = el("quick-model-input").value.trim();
     const deepValue = el("deep-model-input").value.trim();
-    return {
+    const payload = {
       ticker,
       analysis_date: el("analysis-date-input").value,
       selected_analysts: collectSelectedAnalysts(),
@@ -257,13 +280,19 @@
       deep_model: deepValue || null,
       strategy_profile: strategyProfileValue === "" ? null : strategyProfileValue,
     };
+    if (origin) {
+      payload.system_scope = origin.system_scope;
+      payload.selection_record_ref = origin.selection_record_ref;
+      payload.analysis_purpose = origin.analysis_purpose;
+    }
+    return payload;
   }
 
-  async function postAnalysis(ticker) {
+  async function postAnalysis(ticker, origin) {
     const resp = await fetch("/api/runs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(buildAnalysisPayload(ticker)),
+      body: JSON.stringify(buildAnalysisPayload(ticker, origin)),
     });
     const body = await resp.json();
     return { resp, body };
@@ -538,8 +567,21 @@
       renderCandidates();
       return;
     }
+    // BR-3: a scanner-derived candidate must carry exactly one unambiguous
+    // selection to start a baseline analysis. Multiple selections (same or
+    // different systems) cannot be disambiguated by the single Analyze
+    // button, so fail closed: show an error and never POST -- do not silently
+    // demote an ambiguous selected-candidate action to a manual review.
+    if (candidate.provenance && candidate.provenance.length > 1) {
+      candidate.errorMessage =
+        "Cannot analyze: this candidate has multiple scanner selections; " +
+        "exactly one unambiguous selection is required.";
+      renderCandidates();
+      return;
+    }
     try {
-      const { resp, body } = await postAnalysis(candidate.ticker);
+      const origin = deriveSelectionOrigin(candidate);
+      const { resp, body } = await postAnalysis(candidate.ticker, origin);
       if (resp.status !== 202) {
         if (resp.status === 409 && body.detail?.active_run_id) {
           candidate.errorMessage =

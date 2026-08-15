@@ -18,10 +18,19 @@ so that:
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from contextvars import ContextVar, Token
 from enum import Enum
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+from tradingagents.scanners.unified import (
+    AnalysisPurpose,
+    SelectionRecordRef,
+    SelectionSystem,
+    SystemPortfolioContext,
+)
 
 # LLMs sometimes write a placeholder string ("None", "N/A", ...) into an optional
 # numeric field instead of omitting it. Coerce those to None so the structured
@@ -63,6 +72,157 @@ class TraderAction(str, Enum):
     BUY = "Buy"
     HOLD = "Hold"
     SELL = "Sell"
+
+
+class PositionState(str, Enum):
+    """Frozen position-state boundary (FZ-ENTRY-001)."""
+
+    NOT_HELD = "NOT_HELD"
+    HELD = "HELD"
+
+
+class EntryDecision(str, Enum):
+    """Legal governed entry actions for a NOT_HELD position (FZ-ENTRY-002)."""
+
+    BUY = "BUY"
+    WAIT = "WAIT"
+    REVIEW = "REVIEW"
+
+
+class PositionDecision(str, Enum):
+    """Legal governed position actions for a HELD position (FZ-POS-002)."""
+
+    HOLD = "HOLD"
+    REDUCE = "REDUCE"
+    SELL = "SELL"
+    REVIEW = "REVIEW"
+
+
+class ExitReason(str, Enum):
+    """Frozen exit reasons X1..X5 (FZ-POS-004..008)."""
+
+    THESIS_BROKEN = "THESIS_BROKEN"
+    FORWARD_FUNDAMENTALS_MATERIALLY_DETERIORATED = (
+        "FORWARD_FUNDAMENTALS_MATERIALLY_DETERIORATED"
+    )
+    PRICE_EXTREMELY_DISCONNECTED_FROM_REASONABLE_ECONOMICS = (
+        "PRICE_EXTREMELY_DISCONNECTED_FROM_REASONABLE_ECONOMICS"
+    )
+    BETTER_CAPITAL_ALLOCATION_OPPORTUNITY = "BETTER_CAPITAL_ALLOCATION_OPPORTUNITY"
+    PORTFOLIO_RISK = "PORTFOLIO_RISK"
+
+
+class ExecutionAvailability(str, Enum):
+    """Execution availability is separate from investment judgment (FZ-ENTRY)."""
+
+    AVAILABLE = "AVAILABLE"
+    UNAVAILABLE = "UNAVAILABLE"
+    UNKNOWN = "UNKNOWN"
+
+
+_ENTRY_LEGAL_BY_STATE = {
+    PositionState.NOT_HELD: frozenset(
+        {EntryDecision.BUY, EntryDecision.WAIT, EntryDecision.REVIEW}
+    ),
+    PositionState.HELD: frozenset(),
+}
+
+_POSITION_LEGAL_BY_STATE = {
+    PositionState.HELD: frozenset(
+        {PositionDecision.HOLD, PositionDecision.REDUCE, PositionDecision.SELL, PositionDecision.REVIEW}
+    ),
+    PositionState.NOT_HELD: frozenset(),
+}
+
+# Exit reasons that require a same-system portfolio context (FZ-POS-007/008).
+_PORTFOLIO_CONTEXT_REQUIRED_EXIT_REASONS = frozenset(
+    {
+        ExitReason.BETTER_CAPITAL_ALLOCATION_OPPORTUNITY,
+        ExitReason.PORTFOLIO_RISK,
+    }
+)
+
+
+def validate_entry_decision(position_state: PositionState, decision: EntryDecision) -> None:
+    """Fail closed unless ``decision`` is legal for ``position_state``."""
+    if decision not in _ENTRY_LEGAL_BY_STATE[position_state]:
+        raise ValueError(
+            f"illegal entry decision {decision.value!r} for state {position_state.value!r}; "
+            "NOT_HELD allows BUY/WAIT/REVIEW only"
+        )
+
+
+def validate_position_decision(
+    position_state: PositionState, decision: PositionDecision
+) -> None:
+    """Fail closed unless ``decision`` is legal for ``position_state``."""
+    if decision not in _POSITION_LEGAL_BY_STATE[position_state]:
+        raise ValueError(
+            f"illegal position decision {decision.value!r} for state {position_state.value!r}; "
+            "HELD allows HOLD/REDUCE/SELL/REVIEW only"
+        )
+
+
+def validate_exit_reason(
+    reason: ExitReason,
+    portfolio_context: SystemPortfolioContext | None = None,
+    *,
+    consuming_system: SelectionSystem | None = None,
+) -> None:
+    """Fail closed unless ``reason`` is usable given a same-system portfolio
+    context.
+
+    X4 (better capital allocation) and X5 (portfolio risk) may only be
+    asserted when a mechanically scoped, same-system portfolio context is
+    supplied, and only when a consuming ``system_scope`` is known so the
+    context's system can be verified (FZ-PCTX-001/002). Missing context,
+    missing consuming system, and foreign context all fail closed. The context
+    is a typed ``SystemPortfolioContext`` -- not a caller-supplied boolean
+    trust assertion -- so a foreign context is mechanically rejected.
+    """
+    if reason in _PORTFOLIO_CONTEXT_REQUIRED_EXIT_REASONS:
+        if portfolio_context is None:
+            raise ValueError(
+                f"exit reason {reason.value!r} requires a system-scoped portfolio context"
+            )
+        if consuming_system is None:
+            raise ValueError(
+                f"exit reason {reason.value!r} requires a consuming system_scope "
+                "to validate a same-system portfolio context"
+            )
+        if portfolio_context.system_scope is not consuming_system:
+            raise ValueError(
+                f"exit reason {reason.value!r} cannot use foreign portfolio context "
+                f"{portfolio_context.portfolio_context_id!r} scoped to "
+                f"{portfolio_context.system_scope.value!r} (consuming "
+                f"{consuming_system.value!r})"
+            )
+
+
+def validate_wait_recheck(
+    decision: EntryDecision,
+    why_wait: str | None,
+    what_needs_to_change: str | None,
+    recheck_trigger: str | None,
+    review_due: str | None,
+) -> None:
+    """Fail closed unless a WAIT carries full recheck semantics (FZ-ENTRY-004)."""
+    if decision is EntryDecision.WAIT:
+        missing = [
+            name
+            for name, value in (
+                ("why_wait", why_wait),
+                ("what_needs_to_change", what_needs_to_change),
+                ("recheck_trigger", recheck_trigger),
+                ("review_due", review_due),
+            )
+            if not value
+        ]
+        if missing:
+            raise ValueError(
+                "WAIT requires why_wait, what_needs_to_change, recheck_trigger, "
+                f"and review_due; missing={missing!r}"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -148,11 +308,67 @@ class TraderProposal(BaseModel):
         default=None,
         description="Optional sizing guidance, e.g. '5% of portfolio'.",
     )
+    # Level-2 boundary enrichment (G3): governed entry semantics. Optional and
+    # backward-compatible — a plain Buy/Hold/Sell proposal still validates.
+    position_state: PositionState = Field(
+        default=PositionState.NOT_HELD,
+        description=(
+            "The governed position state. NOT_HELD for entry evaluation, "
+            "HELD for an existing position. Defaults to NOT_HELD."
+        ),
+    )
+    entry_decision: EntryDecision | None = Field(
+        default=None,
+        description=(
+            "Optional governed entry action for NOT_HELD: exactly one of "
+            "BUY / WAIT / REVIEW. Execution availability stays a separate field."
+        ),
+    )
+    why_wait: str | None = Field(
+        default=None,
+        description="Optional: why now is not the moment to enter (required when WAIT).",
+    )
+    what_needs_to_change: str | None = Field(
+        default=None,
+        description="Optional: what must change before entry (required when WAIT).",
+    )
+    recheck_trigger: str | None = Field(
+        default=None,
+        description="Optional: the trigger that should prompt a recheck (required when WAIT).",
+    )
+    review_due: str | None = Field(
+        default=None,
+        description="Optional: when a review is due (required when WAIT).",
+    )
+    execution_availability: ExecutionAvailability | None = Field(
+        default=None,
+        description=(
+            "Optional: whether execution is currently available, independent "
+            "of the investment judgment."
+        ),
+    )
 
     @field_validator("entry_price", "stop_loss", mode="before")
     @classmethod
     def _nullish_float_to_none(cls, v):
         return _coerce_optional_float(v)
+
+    @model_validator(mode="after")
+    def _enforce_governed_entry(self):
+        # Mechanical runtime enforcement (BR-2): the governed entry state
+        # machine is asserted at the structured-output boundary, not only in
+        # prompt prose. NOT_HELD -> BUY|WAIT|REVIEW; WAIT requires the full
+        # recheck set; HELD never carries an entry decision.
+        if self.entry_decision is not None:
+            validate_entry_decision(self.position_state, self.entry_decision)
+            validate_wait_recheck(
+                self.entry_decision,
+                self.why_wait,
+                self.what_needs_to_change,
+                self.recheck_trigger,
+                self.review_due,
+            )
+        return self
 
 
 def render_trader_proposal(proposal: TraderProposal) -> str:
@@ -173,6 +389,21 @@ def render_trader_proposal(proposal: TraderProposal) -> str:
         parts.extend(["", f"**Stop Loss**: {proposal.stop_loss}"])
     if proposal.position_sizing:
         parts.extend(["", f"**Position Sizing**: {proposal.position_sizing}"])
+    if proposal.entry_decision is not None:
+        parts.extend(["", f"**Entry Decision**: {proposal.entry_decision.value}"])
+    if proposal.execution_availability is not None:
+        parts.extend(
+            ["", f"**Execution Availability**: {proposal.execution_availability.value}"]
+        )
+    if proposal.entry_decision is EntryDecision.WAIT:
+        if proposal.why_wait:
+            parts.extend(["", f"**Why Wait**: {proposal.why_wait}"])
+        if proposal.what_needs_to_change:
+            parts.extend(["", f"**What Needs To Change**: {proposal.what_needs_to_change}"])
+        if proposal.recheck_trigger:
+            parts.extend(["", f"**Recheck Trigger**: {proposal.recheck_trigger}"])
+        if proposal.review_due:
+            parts.extend(["", f"**Review Due**: {proposal.review_due}"])
     parts.extend([
         "",
         f"FINAL TRANSACTION PROPOSAL: **{proposal.action.value.upper()}**",
@@ -221,11 +452,81 @@ class PortfolioDecision(BaseModel):
         default=None,
         description="Optional recommended holding period, e.g. '3-6 months'.",
     )
+    # Level-2 boundary enrichment (G4): governed position semantics. Optional
+    # and backward-compatible — a plain rating-only decision still validates.
+    position_state: PositionState | None = Field(
+        default=None,
+        description=(
+            "Optional governed position state for an existing position: "
+            "HELD when reviewing a held position; omit for a fresh entry."
+        ),
+    )
+    position_decision: PositionDecision | None = Field(
+        default=None,
+        description=(
+            "Optional governed position action for HELD: exactly one of "
+            "HOLD / REDUCE / SELL / REVIEW."
+        ),
+    )
+    exit_reason: ExitReason | None = Field(
+        default=None,
+        description=(
+            "Optional frozen exit reason X1..X5 (THESIS_BROKEN, "
+            "FORWARD_FUNDAMENTALS_MATERIALLY_DETERIORATED, "
+            "PRICE_EXTREMELY_DISCONNECTED_FROM_REASONABLE_ECONOMICS, "
+            "BETTER_CAPITAL_ALLOCATION_OPPORTUNITY, PORTFOLIO_RISK)."
+        ),
+    )
+    # BR-4: X4/X5 must receive a mechanically scoped, same-system portfolio
+    # context -- never a boolean trust assertion. Null in the current runtime
+    # (no portfolio engine is authorized), so X4/X5 fail closed.
+    portfolio_context: SystemPortfolioContext | None = Field(
+        default=None,
+        description=(
+            "Optional system-scoped portfolio context. Required before an "
+            "X4 (better capital allocation) or X5 (portfolio risk) exit reason "
+            "can be asserted."
+        ),
+    )
+    # SR-3: the consuming/decision system scope. X4/X5 require a same-system
+    # portfolio context; a foreign or missing system_scope fails closed.
+    system_scope: SelectionSystem | None = Field(
+        default=None,
+        description=(
+            "The consuming system this decision is scoped to. Required for X4 "
+            "and X5 so the portfolio context's system can be verified."
+        ),
+    )
 
     @field_validator("price_target", mode="before")
     @classmethod
     def _nullish_float_to_none(cls, v):
         return _coerce_optional_float(v)
+
+    @model_validator(mode="after")
+    def _enforce_governed_position(self):
+        # Mechanical runtime enforcement (SR-2/SR-3): HELD -> HOLD|REDUCE|
+        # SELL|REVIEW (an explicit position_decision is required); a position
+        # decision or exit reason is only legal for a HELD position; X4/X5
+        # require a same-system portfolio context verified against this
+        # decision's consuming system_scope.
+        if self.position_state is PositionState.HELD and self.position_decision is None:
+            raise ValueError(
+                "position_state=HELD requires position_decision HOLD/REDUCE/SELL/REVIEW"
+            )
+        if self.position_decision is not None:
+            if self.position_state is not PositionState.HELD:
+                raise ValueError("position_decision requires position_state=HELD")
+            validate_position_decision(self.position_state, self.position_decision)
+        if self.exit_reason is not None:
+            if self.position_state is not PositionState.HELD:
+                raise ValueError("exit_reason requires position_state=HELD")
+            validate_exit_reason(
+                self.exit_reason,
+                self.portfolio_context,
+                consuming_system=self.system_scope,
+            )
+        return self
 
 
 def render_pm_decision(decision: PortfolioDecision) -> str:
@@ -247,6 +548,10 @@ def render_pm_decision(decision: PortfolioDecision) -> str:
         parts.extend(["", f"**Price Target**: {decision.price_target}"])
     if decision.time_horizon:
         parts.extend(["", f"**Time Horizon**: {decision.time_horizon}"])
+    if decision.position_decision is not None:
+        parts.extend(["", f"**Position Decision**: {decision.position_decision.value}"])
+    if decision.exit_reason is not None:
+        parts.extend(["", f"**Exit Reason**: {decision.exit_reason.value}"])
     return "\n".join(parts)
 
 
@@ -339,3 +644,158 @@ def render_sentiment_report(report: SentimentReport) -> str:
         "",
         report.narrative,
     ])
+
+
+# ---------------------------------------------------------------------------
+# Level-2 boundary enrichment (G7): minimal future interface semantics only.
+# No scheduler, no tracking daemon, no persistent Decision Ledger, no Paper
+# Portfolio engine. These types only keep future services from being blocked.
+# ---------------------------------------------------------------------------
+
+
+class WaitRecheckInfo(BaseModel):
+    """Reusable WAIT recheck semantics (FZ-ENTRY-004): no dead WAIT."""
+
+    why_wait: str = Field(description="Why now is not the moment to act.")
+    what_needs_to_change: str = Field(
+        description="What must change before the decision can proceed."
+    )
+    recheck_trigger: str = Field(
+        description="The concrete trigger that should prompt a recheck."
+    )
+    review_due: str = Field(description="When a review is due.")
+
+
+class ReevaluationRequest(BaseModel):
+    """Minimal reevaluation request transport contract (FZ-IF-001/002/003).
+
+    Interface-only: nothing in the current runtime schedules or consumes this.
+    Target system and analysis purpose are constrained enums; baseline
+    reevaluation must bind its own selection provenance; and a portfolio
+    context, when supplied, must be same-system (foreign context rejected).
+    """
+
+    request_id: str = Field(description="Unique reevaluation request id.")
+    target_system: SelectionSystem = Field(
+        description="The system this reevaluation targets (TRADITIONAL/PRADEEP)."
+    )
+    unified_candidate_ref: str = Field(
+        description="The E02 unified candidate this reevaluation concerns."
+    )
+    selection_record_ref: SelectionRecordRef | None = Field(
+        default=None,
+        description="Nullable selection origin. Baseline reevaluation must bind its own system provenance.",
+    )
+    analysis_purpose: AnalysisPurpose = Field(
+        description="One of BASELINE_SYSTEM / EXPLORATORY_COMPARE / OWNER_MANUAL_REVIEW."
+    )
+    reason_code: str = Field(description="Why this reevaluation is being requested.")
+    triggered_at: str = Field(description="When the request was triggered.")
+    event_or_source_ref: str | None = Field(
+        default=None, description="Optional source/event that triggered the request."
+    )
+    portfolio_context_ref: SystemPortfolioContext | None = Field(
+        default=None, description="Nullable system-scoped portfolio context reference."
+    )
+    data_as_of_hint: str | None = Field(
+        default=None, description="Optional data as-of hint for the reevaluation."
+    )
+
+    @model_validator(mode="after")
+    def _enforce_reevaluation_semantics(self):
+        # FZ-IF-002/003: baseline reevaluation requires own-selection
+        # provenance whose selection system matches the target system.
+        if self.analysis_purpose is AnalysisPurpose.BASELINE_SYSTEM:
+            if self.selection_record_ref is None:
+                raise ValueError(
+                    "a baseline reevaluation requires a selection_record_ref"
+                )
+            if self.selection_record_ref.selection_system is not self.target_system:
+                raise ValueError(
+                    "baseline reevaluation selection origin does not match "
+                    "target_system"
+                )
+        # FZ-PCTX: foreign portfolio context must fail closed.
+        if (
+            self.portfolio_context_ref is not None
+            and self.portfolio_context_ref.system_scope is not self.target_system
+        ):
+            raise ValueError(
+                f"foreign portfolio context "
+                f"{self.portfolio_context_ref.portfolio_context_id!r} is scoped to "
+                f"{self.portfolio_context_ref.system_scope.value!r}, not "
+                f"{self.target_system.value!r}"
+            )
+        return self
+
+
+# ---------------------------------------------------------------------------
+# Governed decision context (SR-2/SR-3).
+#
+# Threaded from the run boundary to the Trader and Portfolio Manager so
+# production validators can distinguish a governed baseline decision from
+# legacy/manual free-text, and know the trusted consuming system for X4/X5
+# same-system portfolio-context checks. Context-local state prevents a run in
+# one thread/task from leaking governance into another execution context.
+# ---------------------------------------------------------------------------
+
+_governed_decision_context: ContextVar[dict[str, Any] | None] = ContextVar(
+    "governed_decision_context", default=None
+)
+
+
+def set_governed_decision_context(
+    *,
+    analysis_purpose: str | None,
+    system_scope: str | None,
+    portfolio_eligible: bool,
+) -> Token:
+    """Set governed state for this execution context and return its reset token."""
+    return _governed_decision_context.set(
+        {
+            "analysis_purpose": analysis_purpose,
+            "system_scope": system_scope,
+            "portfolio_eligible": portfolio_eligible,
+        }
+    )
+
+
+def clear_governed_decision_context(token: Token | None = None) -> None:
+    """Clear governed state, or restore the exact state preceding ``token``."""
+    if token is None:
+        _governed_decision_context.set(None)
+    else:
+        _governed_decision_context.reset(token)
+
+
+def get_governed_decision_context() -> dict[str, Any]:
+    return dict(_governed_decision_context.get() or {})
+
+
+def is_governed_baseline() -> bool:
+    """True when the current run is a governed BASELINE_SYSTEM decision."""
+    return (
+        (_governed_decision_context.get() or {}).get("analysis_purpose")
+        == "BASELINE_SYSTEM"
+    )
+
+
+def invoke_governed_structured(
+    structured_llm: Any,
+    prompt: Any,
+    render: Callable[[Any], str],
+    agent_name: str,
+) -> str:
+    """Run a governed structured call that NEVER falls back to unchecked free
+    text (SR-2). A provider without structured output, a null result, or any
+    validation/render failure raises (fail closed) instead of silently
+    accepting free-text BUY/HOLD/SELL."""
+    if structured_llm is None:
+        raise ValueError(
+            f"{agent_name}: governed baseline requires structured output; "
+            "the provider does not support with_structured_output"
+        )
+    result = structured_llm.invoke(prompt)
+    if result is None:
+        raise ValueError(f"{agent_name}: structured output returned no parsed result")
+    return render(result)

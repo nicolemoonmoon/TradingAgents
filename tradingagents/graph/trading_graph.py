@@ -10,6 +10,11 @@ from typing import Any
 import yfinance as yf
 from langgraph.prebuilt import ToolNode
 
+from tradingagents.agents.schemas import (
+    clear_governed_decision_context,
+    set_governed_decision_context,
+)
+
 # Import the abstract tool methods from agent_utils
 from tradingagents.agents.utils.agent_utils import (
     build_instrument_context,
@@ -96,6 +101,11 @@ class TradingAgentsGraph:
         self.deep_thinking_llm = deep_client.get_llm()
         self.quick_thinking_llm = quick_client.get_llm()
 
+        # G6: thread the governed system_scope (set by the API into config)
+        # into memory construction so the append-only log is namespaced per
+        # system. A Traditional baseline and a Pradeep/Stockbee-grounded run
+        # therefore never share a memory log.
+        self.system_scope = self.config.get("system_scope")
         self.memory_log = TradingMemoryLog(self.config)
 
         # Create tool nodes
@@ -394,46 +404,59 @@ class TradingAgentsGraph:
             tid = thread_id(company_name, str(trade_date))
             args.setdefault("config", {}).setdefault("configurable", {})["thread_id"] = tid
 
-        if self.debug:
-            trace = []
-            last_printed = None
-            for chunk in self.graph.stream(init_agent_state, **args):
-                if chunk["messages"]:
-                    msg = chunk["messages"][-1]
-                    # Nodes after the trader don't append to messages, so the
-                    # same trailing message repeats across chunks. Print it only
-                    # when it changes (#1027); the trace/state merge is unchanged.
-                    signature = (type(msg).__name__, getattr(msg, "content", None))
-                    if signature != last_printed:
-                        msg.pretty_print()
-                        last_printed = signature
-                    trace.append(chunk)
-            # Streamed chunks are per-node deltas. Merge them so the returned
-            # state matches what graph.invoke() yields in the non-debug path.
-            final_state = {}
-            for chunk in trace:
-                final_state.update(chunk)
-        else:
-            final_state = self.graph.invoke(init_agent_state, **args)
-
-        # Store current state for reflection.
-        self.curr_state = final_state
-
-        # Log state to disk.
-        self._log_state(trade_date, final_state)
-
-        # Store decision for deferred reflection on the next same-ticker run.
-        self.memory_log.store_decision(
-            ticker=company_name,
-            trade_date=trade_date,
-            final_trade_decision=final_state["final_trade_decision"],
+        # G6/SR-2/SR-3: thread the governed decision context into the Trader
+        # and Portfolio Manager so they can distinguish a governed baseline
+        # decision from legacy/manual free-text, and know the consuming system
+        # for X4/X5 same-system portfolio-context checks. Cleared on every exit
+        # so a stale context never leaks into a later run.
+        set_governed_decision_context(
+            analysis_purpose=self.config.get("analysis_purpose"),
+            system_scope=self.config.get("system_scope"),
+            portfolio_eligible=bool(self.config.get("portfolio_eligible")),
         )
+        try:
+            if self.debug:
+                trace = []
+                last_printed = None
+                for chunk in self.graph.stream(init_agent_state, **args):
+                    if chunk["messages"]:
+                        msg = chunk["messages"][-1]
+                        # Nodes after the trader don't append to messages, so the
+                        # same trailing message repeats across chunks. Print it only
+                        # when it changes (#1027); the trace/state merge is unchanged.
+                        signature = (type(msg).__name__, getattr(msg, "content", None))
+                        if signature != last_printed:
+                            msg.pretty_print()
+                            last_printed = signature
+                        trace.append(chunk)
+                # Streamed chunks are per-node deltas. Merge them so the returned
+                # state matches what graph.invoke() yields in the non-debug path.
+                final_state = {}
+                for chunk in trace:
+                    final_state.update(chunk)
+            else:
+                final_state = self.graph.invoke(init_agent_state, **args)
 
-        # Clear checkpoint on successful completion to avoid stale state.
-        if self.config.get("checkpoint_enabled"):
-            clear_checkpoint(
-                self.config["data_cache_dir"], company_name, str(trade_date)
+            # Store current state for reflection.
+            self.curr_state = final_state
+
+            # Log state to disk.
+            self._log_state(trade_date, final_state)
+
+            # Store decision for deferred reflection on the next same-ticker run.
+            self.memory_log.store_decision(
+                ticker=company_name,
+                trade_date=trade_date,
+                final_trade_decision=final_state["final_trade_decision"],
             )
+
+            # Clear checkpoint on successful completion to avoid stale state.
+            if self.config.get("checkpoint_enabled"):
+                clear_checkpoint(
+                    self.config["data_cache_dir"], company_name, str(trade_date)
+                )
+        finally:
+            clear_governed_decision_context()
 
         return final_state, self.process_signal(final_state["final_trade_decision"])
 

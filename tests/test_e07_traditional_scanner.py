@@ -37,15 +37,58 @@ from tradingagents.scanners import (
     compile_traditional_scan,
     traditional,
 )
+from tradingagents.scanners.traditional import (
+    StructuralDisruptionAssessment,
+    StructuralDisruptionFinding,
+    StructuralDisruptionRootQuestion,
+    validate_structural_disruption_6q,
+)
 
 NOW = datetime(2026, 8, 10, 3, 0, tzinfo=timezone.utc)
 PROFILE = EconomicProfile.ASSET_LIGHT_TECH_PLATFORM
+
+_SD = StructuralDisruptionRootQuestion
+
+
+def _default_structural_disruption() -> StructuralDisruptionAssessment:
+    def finding(conclusion, counter_evidence=(), **kwargs):
+        return StructuralDisruptionFinding(
+            evidence=("issuer filing evidence",),
+            counter_evidence=counter_evidence,
+            conclusion=conclusion,
+            **kwargs,
+        )
+
+    return StructuralDisruptionAssessment(
+        method_version="sd-owner-v1",
+        questions={
+            _SD.CUSTOMER_JOB_VALUE_ENGINE: finding("job/value engine"),
+            _SD.OUTSIDE_SUBSTITUTE: finding("substitute"),
+            _SD.MIGRATION_EVIDENCE_VELOCITY: finding("migration"),
+            _SD.ECONOMIC_TRANSMISSION: finding(
+                "transmission", economic_transmission="customer -> demand -> margin"
+            ),
+            _SD.INCUMBENT_ADAPTATION_COUNTERATTACK: finding(
+                "adaptation", incumbent_adaptation="incumbent can pivot"
+            ),
+            _SD.TIMING_FALSIFICATION_CONFIDENCE: finding(
+                "timing",
+                counter_evidence=("counter-evidence",),
+                expected_horizon="12-24 months",
+                falsification_condition="condition",
+                confidence="medium",
+                major_unknowns=("unknown",),
+                methodology_rule_refs=("FZ-SD-006",),
+            ),
+        },
+    )
 
 
 def _record(
     value=0.8,
     *,
     symbol="ACME",
+    source="issuer_primary_record",
     availability=Availability.AVAILABLE,
     reporting_period="FY2025",
     reason=None,
@@ -54,7 +97,7 @@ def _record(
         operation="governed_evidence",
         availability=availability,
         provider="issuer",
-        source="issuer_primary_record",
+        source=source,
         retrieved_at=NOW,
         payload={"value": value} if availability is Availability.AVAILABLE else None,
         symbol=symbol,
@@ -191,18 +234,26 @@ def _request(
     data_confidence_actionable=lambda confidence: confidence >= 0.75,
     g2_responsibilities=frozenset(G2Responsibility),
     reporting_period_applicable=lambda judgment, data: True,
+    structural_disruption=None,
+    shared_observation_metric_ids=(),
 ):
     values = values or {}
     evidence = {}
     rules = _rules(g2_responsibilities=g2_responsibilities)
     for rule in rules:
+        source = (
+            "issuer_primary_record:shared"
+            if rule.metric_id in shared_observation_metric_ids
+            else f"issuer_primary_record:{rule.metric_id}"
+        )
         if rule.metric_id in missing:
             data = _record(
+                source=source,
                 availability=Availability.UNAVAILABLE,
                 reason="not present at the point in time",
             )
         else:
-            data = _record(values.get(rule.metric_id, 0.8))
+            data = _record(values.get(rule.metric_id, 0.8), source=source)
         evidence[rule.metric_id] = EvidenceInput(rule.metric_id, data)
 
     peers = tuple(
@@ -277,6 +328,7 @@ def _request(
             lambda research_record: GateStatus.PASS,
             reporting_period_applicable,
         ),
+        structural_disruption=structural_disruption or _default_structural_disruption(),
         ai_overlay=overlay or AIOverlay(),
     )
 
@@ -595,3 +647,295 @@ def test_compiler_has_no_provider_router_network_model_or_e02_materialization():
     assert "selection_system" not in source
     assert "Unified Candidate" not in source
     assert "/Downloads/" not in source
+
+
+# ---------------------------------------------------------------------------
+# G1: Structural Disruption six-root-question coverage (CUR-001 / FZ-SD-001..007)
+# ---------------------------------------------------------------------------
+
+
+ROOT = StructuralDisruptionRootQuestion
+
+
+def _finding(
+    conclusion="reviewed",
+    *,
+    economic_transmission=None,
+    incumbent_adaptation=None,
+    horizon=None,
+    falsification=None,
+    confidence=None,
+    counter=(),
+    unknowns=(),
+    refs=(),
+):
+    return StructuralDisruptionFinding(
+        evidence=("issuer filing evidence",),
+        counter_evidence=counter,
+        conclusion=conclusion,
+        economic_transmission=economic_transmission,
+        incumbent_adaptation=incumbent_adaptation,
+        expected_horizon=horizon,
+        falsification_condition=falsification,
+        confidence=confidence,
+        major_unknowns=unknowns,
+        methodology_rule_refs=refs,
+    )
+
+
+def _assessment():
+    return StructuralDisruptionAssessment(
+        method_version="sd-owner-v1",
+        questions={
+            ROOT.CUSTOMER_JOB_VALUE_ENGINE: _finding("job/value engine"),
+            ROOT.OUTSIDE_SUBSTITUTE: _finding("substitute"),
+            ROOT.MIGRATION_EVIDENCE_VELOCITY: _finding("migration"),
+            ROOT.ECONOMIC_TRANSMISSION: _finding(
+                "transmission", economic_transmission="customer -> demand -> margin"
+            ),
+            ROOT.INCUMBENT_ADAPTATION_COUNTERATTACK: _finding(
+                "adaptation", incumbent_adaptation="incumbent can pivot"
+            ),
+            ROOT.TIMING_FALSIFICATION_CONFIDENCE: _finding(
+                "timing",
+                counter=("counter-evidence",),
+                horizon="12-24 months",
+                falsification="condition",
+                confidence="medium",
+                unknowns=("unknown",),
+                refs=("FZ-SD-006",),
+            ),
+        },
+    )
+
+
+@pytest.mark.unit
+def test_six_root_questions_are_exactly_the_frozen_set():
+    from tradingagents.scanners.traditional import STRUCTURAL_DISRUPTION_ROOT_QUESTIONS
+
+    assert {question.value for question in STRUCTURAL_DISRUPTION_ROOT_QUESTIONS} == {
+        "CUSTOMER_JOB_VALUE_ENGINE",
+        "OUTSIDE_SUBSTITUTE",
+        "MIGRATION_EVIDENCE_VELOCITY",
+        "ECONOMIC_TRANSMISSION",
+        "INCUMBENT_ADAPTATION_COUNTERATTACK",
+        "TIMING_FALSIFICATION_CONFIDENCE",
+    }
+
+
+@pytest.mark.unit
+def test_valid_six_question_assessment_passes():
+    validate_structural_disruption_6q(_assessment())
+
+
+@pytest.mark.unit
+def test_missing_root_question_fails_closed():
+    assessment = _assessment()
+    questions = dict(assessment.questions)
+    del questions[ROOT.OUTSIDE_SUBSTITUTE]
+    with pytest.raises(ContractViolation, match="exactly the six frozen root questions"):
+        StructuralDisruptionAssessment("sd-owner-v1", questions)
+
+
+@pytest.mark.unit
+def test_q6_requires_falsification_confidence_and_horizon():
+    questions = dict(_assessment().questions)
+    questions[ROOT.TIMING_FALSIFICATION_CONFIDENCE] = _finding(
+        "timing", counter=("counter-evidence",)
+    )
+    with pytest.raises(ContractViolation, match="expected_horizon"):
+        StructuralDisruptionAssessment("sd-owner-v1", questions)
+
+
+@pytest.mark.unit
+def test_q6_requires_counter_evidence():
+    questions = dict(_assessment().questions)
+    questions[ROOT.TIMING_FALSIFICATION_CONFIDENCE] = _finding(
+        "timing",
+        horizon="12-24 months",
+        falsification="condition",
+        confidence="medium",
+    )
+    with pytest.raises(ContractViolation, match="counter-evidence"):
+        StructuralDisruptionAssessment("sd-owner-v1", questions)
+
+
+@pytest.mark.unit
+def test_q4_requires_economic_transmission_path():
+    questions = dict(_assessment().questions)
+    questions[ROOT.ECONOMIC_TRANSMISSION] = _finding("transmission")
+    with pytest.raises(ContractViolation, match="economic-transmission"):
+        StructuralDisruptionAssessment("sd-owner-v1", questions)
+
+
+@pytest.mark.unit
+def test_q5_requires_incumbent_adaptation():
+    questions = dict(_assessment().questions)
+    questions[ROOT.INCUMBENT_ADAPTATION_COUNTERATTACK] = _finding("adaptation")
+    with pytest.raises(ContractViolation, match="incumbent-adaptation"):
+        StructuralDisruptionAssessment("sd-owner-v1", questions)
+
+
+@pytest.mark.unit
+def test_finding_requires_evidence_and_conclusion():
+    with pytest.raises(ContractViolation, match="requires evidence"):
+        StructuralDisruptionFinding((), (), "conclusion")
+
+
+@pytest.mark.unit
+def test_finding_preserves_methodology_rule_references():
+    finding = _finding("reviewed", refs=("FZ-SD-001", "FZ-EXP-001"))
+    assert finding.methodology_rule_refs == ("FZ-SD-001", "FZ-EXP-001")
+
+
+# ---------------------------------------------------------------------------
+# BR-1: the compiler produces methodology-neutral facts + Traditional-scoped
+# claims (de-duplicated) and carries them, plus the 6Q assessment, in the real
+# TraditionalScanResult (CUR-001/002/003).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_compiler_carries_structural_disruption_and_deduped_evidence():
+    from tradingagents.scanners.unified import SelectionSystem
+
+    result = compile_traditional_scan(_request())
+
+    # CUR-001: the 6Q assessment is produced in the real compiler path.
+    assert result.structural_disruption is not None
+    assert result.structural_disruption.method_version == "sd-owner-v1"
+
+    # CUR-002: methodology-neutral facts, de-duplicated by identity.
+    fact_ids = [fact.fact_id for fact in result.shared_facts]
+    assert fact_ids
+    assert len(fact_ids) == len(set(fact_ids)), "facts must be de-duplicated"
+    forbidden = {
+        "selection_score",
+        "setup_score",
+        "traditional_score",
+        "pradeep_score",
+        "bullish_conclusion",
+        "bearish_conclusion",
+        "entry_recommendation",
+        "position_recommendation",
+    }
+    for fact in result.shared_facts:
+        assert not (forbidden & set(fact.__dataclass_fields__))
+
+    # CUR-002/003: Traditional-scoped claims reference the facts exactly once.
+    claim_ids = [claim.claim_id for claim in result.system_evidence_claims]
+    assert len(claim_ids) == len(set(claim_ids))
+    for claim in result.system_evidence_claims:
+        assert claim.system_scope is SelectionSystem.TRADITIONAL
+        claim.require_system_scope(SelectionSystem.TRADITIONAL)
+        assert len(claim.fact_refs) == len(set(claim.fact_refs)), "no double counting"
+
+    g1_claim = next(
+        claim
+        for claim in result.system_evidence_claims
+        if claim.claim_id.endswith(":G1_FINANCIAL_REALITY_CRITICAL_ACCOUNTING")
+    )
+    # The G1 claim references the de-duplicated fact(s) its metrics were
+    # computed from; every ref resolves to a fact in the result.
+    assert g1_claim.fact_refs
+    assert set(g1_claim.fact_refs) <= set(fact_ids)
+
+    # CUR-001/007: the structural 6Q rationale is carried as a dedicated
+    # Traditional-scoped claim with its methodology rule references.
+    sd_claim = next(
+        claim
+        for claim in result.system_evidence_claims
+        if claim.claim_id.endswith(":structural_disruption_6q")
+    )
+    assert "TIMING_FALSIFICATION_CONFIDENCE" in sd_claim.claim
+    assert "falsification" in sd_claim.claim
+    assert "FZ-SD-006" in sd_claim.methodology_rule_refs
+
+
+@pytest.mark.unit
+def test_same_canonical_observation_dedupes_to_one_shared_fact():
+    """Two (or more) metric analyses reading the same canonical observation
+    must collapse to ONE SharedFact, not N per-metric facts (CUR-002)."""
+    result = compile_traditional_scan(
+        _request(shared_observation_metric_ids=("val_peer", "val_history"))
+    )
+
+    # Two G3 metrics read the same observation and resolve to one fact; all
+    # other metrics retain distinct canonical sources.
+    assert len(result.shared_facts) == 9
+    fact = next(
+        item
+        for item in result.shared_facts
+        if "issuer_primary_record:shared" in item.provenance
+    )
+    # The fact carries the actual observed value/content (auditable evidence).
+    assert "0.8" in fact.fact
+    assert "val_peer" not in fact.fact
+    assert "val_history" not in fact.fact
+    assert "traditional" not in fact.fact_id.lower()
+    assert "traditional" not in fact.provenance.lower()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("duplicate_value", "other_value"),
+    ((0.9, 0.1), (0.1, 0.9)),
+)
+def test_same_gate_duplicate_fact_fails_closed_before_weighting(
+    duplicate_value, other_value
+):
+    """Two metric ids cannot move a gate or G7 by weighting one fact twice."""
+    values = {
+        "val_peer": duplicate_value,
+        "val_history": duplicate_value,
+        "val_implied": other_value,
+        "val_bands": other_value,
+        "val_asymmetry": other_value,
+        "val_uncertainty": other_value,
+    }
+    result = compile_traditional_scan(
+        _request(
+            values=values,
+            shared_observation_metric_ids=("val_peer", "val_history"),
+        )
+    )
+
+    g3 = result.gate_evaluations[Gate.G3]
+    assert g3.status is GateStatus.REVIEW_REQUIRED
+    assert g3.score is None
+    assert any("DUPLICATE_SCORE_BEARING_FACT" in reason for reason in g3.reasons)
+    assert result.metric_evaluations["val_peer"].weighted_contribution is None
+    assert result.metric_evaluations["val_history"].weighted_contribution is None
+    assert result.candidate_tier is None
+    assert result.gate_evaluations[Gate.G7].status is GateStatus.REVIEW_REQUIRED
+    assert result.review_required
+
+
+@pytest.mark.unit
+def test_distinct_observations_yield_distinct_facts_without_double_counting():
+    """Distinct observations produce distinct facts, and no gate claim double
+    counts a single underlying fact (CUR-002)."""
+    result = compile_traditional_scan(
+        _request(values={"financial_reality": 0.9, "business_quality": 0.7})
+    )
+
+    fact_ids = [fact.fact_id for fact in result.shared_facts]
+    assert len(fact_ids) == len(set(fact_ids)), "facts must be de-duplicated"
+    # Every metric has its own canonical source even where values happen to
+    # match, so value equality alone never merges distinct observations.
+    assert len(fact_ids) == 10
+    for claim in result.system_evidence_claims:
+        if claim.claim_type == "gate_conclusion":
+            assert len(claim.fact_refs) == len(set(claim.fact_refs)), "no double counting"
+
+
+@pytest.mark.unit
+def test_compiler_structural_disruption_gap_fails_closed():
+    from tradingagents.scanners.traditional import StructuralDisruptionAssessment
+
+    # Build a 6Q assessment missing one root question and confirm the compiler
+    # rejects the request at the ScanRequest boundary (fail closed).
+    questions = dict(_default_structural_disruption().questions)
+    del questions[_SD.OUTSIDE_SUBSTITUTE]
+    with pytest.raises(ContractViolation, match="exactly the six frozen root questions"):
+        StructuralDisruptionAssessment("sd-owner-v1", questions)

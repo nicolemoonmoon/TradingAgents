@@ -18,9 +18,31 @@ class TradingMemoryLog:
     def __init__(self, config: dict = None):
         cfg = config or {}
         self._log_path = None
+        # G6: system-scoped memory isolation. When a governed run carries a
+        # ``system_scope``, the append-only log is namespaced per system so a
+        # Traditional baseline never reads/writes a Pradeep/Stockbee-grounded
+        # log and vice-versa. Legacy unscoped runs keep the unscoped path.
+        #
+        # BR-3: the namespace is further split by eligibility so that an
+        # eligible baseline (portfolio_eligible=True) consumes ONLY the
+        # same-system eligible baseline history. A same-system manual /
+        # exploratory / ineligible run writes to a separate per-purpose
+        # namespace and can never feed a later baseline decision.
+        self._system_scope = cfg.get("system_scope")
+        self._portfolio_eligible = bool(cfg.get("portfolio_eligible"))
+        self._analysis_purpose = cfg.get("analysis_purpose")
         path = cfg.get("memory_log_path")
         if path:
-            self._log_path = Path(path).expanduser()
+            resolved = Path(path).expanduser()
+            if self._system_scope:
+                scope = str(self._system_scope).lower()
+                if self._portfolio_eligible:
+                    name = f"{resolved.stem}.{scope}{resolved.suffix}"
+                else:
+                    purpose = str(self._analysis_purpose or "manual").lower()
+                    name = f"{resolved.stem}.{scope}.{purpose}{resolved.suffix}"
+                resolved = resolved.with_name(name)
+            self._log_path = resolved
             self._log_path.parent.mkdir(parents=True, exist_ok=True)
         # Optional cap on resolved entries. None disables rotation.
         self._max_entries = cfg.get("memory_log_max_entries")

@@ -1791,3 +1791,568 @@ def test_no_ticker_scanner_candidate_cannot_start_run_using_company_id_as_ticker
         json={"ticker": "example:private-company:001", "analysis_date": "2026-08-12"},
     )
     assert resp.status_code == 422
+
+
+@pytest.mark.unit
+def test_traditional_scan_execution_branch_is_rejected_without_scanner_execution(
+    client, monkeypatch
+):
+    from tradingagents.scanners import traditional, unified
+
+    calls = []
+
+    def forbidden(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise AssertionError("Traditional execution must not be reachable from the API")
+
+    monkeypatch.setattr(traditional, "compile_traditional_scan", forbidden)
+    monkeypatch.setattr(unified, "compile_traditional_candidate", forbidden)
+
+    resp = client.post(
+        "/api/scanner-candidates",
+        json={"kind": "traditional_scan", "ticker": "AAPL"},
+    )
+    assert resp.status_code == 422
+    assert calls == []
+    assert api.main._CANDIDATE_FEED == {}
+
+
+@pytest.mark.unit
+def test_api_has_no_snapshot_feed_or_synthetic_traditional_policy_helpers():
+    forbidden = (
+        "_SNAPSHOT_FEED",
+        "_SNAPSHOT_FEED_LOCK",
+        "GOVERNED_PROFILE",
+        "_GOVERNED_METRIC_SPECS",
+        "_ingest_traditional_scan",
+        "_build_governed_traditional_scan_request",
+        "_governed_canonical",
+        "_evidence_from_json",
+        "_structural_finding_from_json",
+        "_structural_disruption_from_json",
+        "_governed_ai_research",
+    )
+    assert [name for name in forbidden if hasattr(api.main, name)] == []
+
+
+@pytest.mark.unit
+def test_multi_selection_analyze_stops_before_post(client):
+    body = client.get("/app.js").text
+    start = body.index("async function analyzeCandidate(candidate)")
+    end = body.index('candidateAddButton.addEventListener("click"', start)
+    analyze = body[start:end]
+    message = analyze.index("multiple scanner selections")
+    stop = analyze.index("return;", message)
+    post = analyze.index("postAnalysis(candidate.ticker", message)
+    assert message < stop < post
+
+
+@pytest.mark.unit
+def test_post_runs_baseline_aaple_selection_cannot_authorize_msft(client, monkeypatch):
+    monkeypatch.setattr("api.main._build_graph", lambda request: _TrivialFakeGraph())
+    monkeypatch.setattr(StreamingDeepSeekAnalysisRunner, "run", lambda self, *a, **kw: None)
+
+    # A real AAPL Traditional selection in the E02 candidate authority.
+    client.post(
+        "/api/scanner-candidates",
+        json=_candidate_mapping(
+            company_id="ticker:AAPL",
+            ticker="AAPL",
+            selections=[_selection_mapping(selection_id="traditional:AAPL:1")],
+        ),
+    )
+
+    # A BASELINE request analyzing MSFT with an AAPL selection must be rejected
+    # before any run artifact is written.
+    resp = client.post(
+        "/api/runs",
+        json={
+            "ticker": "MSFT",
+            "analysis_date": "2026-07-03",
+            "system_scope": "TRADITIONAL",
+            "selection_record_ref": _baseline_origin(),
+            "analysis_purpose": "BASELINE_SYSTEM",
+        },
+    )
+    assert resp.status_code == 422
+    assert "cannot authorize" in resp.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# G5/R1: selection-origin thread + Stockbee grounding gate (R3/R1)
+# ---------------------------------------------------------------------------
+
+
+class _GovernedCapturingGraph:
+    def __init__(self, selected_analysts, config, debug):
+        self.selected_analysts = selected_analysts
+        self.config = dict(config)
+        self.debug = debug
+
+
+def _baseline_origin(system="TRADITIONAL", selection_id="traditional:AAPL:1"):
+    return {
+        "selection_id": selection_id,
+        "selection_system": system,
+        "company_id": "ticker:AAPL",
+    }
+
+
+@pytest.mark.unit
+def test_build_graph_threads_baseline_governance_into_config(monkeypatch):
+    from api.main import _build_graph
+    from api.schemas import StartAnalysisRequest
+
+    captured = []
+
+    def fake_graph(selected_analysts, config, debug):
+        captured.append(dict(config))
+        return _GovernedCapturingGraph(selected_analysts, config, debug)
+
+    monkeypatch.setattr("api.main.TradingAgentsGraph", fake_graph)
+
+    request = StartAnalysisRequest(
+        ticker="AAPL",
+        analysis_date="2026-07-03",
+        system_scope="TRADITIONAL",
+        selection_record_ref=_baseline_origin(),
+        analysis_purpose="BASELINE_SYSTEM",
+    )
+    _build_graph(request)
+
+    config = captured[0]
+    assert config["system_scope"] == "TRADITIONAL"
+    assert config["analysis_purpose"] == "BASELINE_SYSTEM"
+    assert config["portfolio_eligible"] is True
+
+
+@pytest.mark.unit
+def test_build_graph_manual_run_is_portfolio_ineligible(monkeypatch):
+    from api.main import _build_graph
+    from api.schemas import StartAnalysisRequest
+
+    captured = []
+
+    def fake_graph(selected_analysts, config, debug):
+        captured.append(dict(config))
+        return _GovernedCapturingGraph(selected_analysts, config, debug)
+
+    monkeypatch.setattr("api.main.TradingAgentsGraph", fake_graph)
+
+    _build_graph(StartAnalysisRequest(ticker="AAPL", analysis_date="2026-07-03"))
+
+    config = captured[0]
+    assert config["system_scope"] is None
+    assert config["analysis_purpose"] == "OWNER_MANUAL_REVIEW"
+    assert config["portfolio_eligible"] is False
+
+
+@pytest.mark.unit
+def test_build_graph_traditional_scope_never_injects_stockbee_grounding(monkeypatch):
+    from api.main import _build_graph
+    from api.schemas import StartAnalysisRequest
+
+    captured = []
+
+    def fake_graph(selected_analysts, config, debug):
+        captured.append(dict(config))
+        return _GovernedCapturingGraph(selected_analysts, config, debug)
+
+    monkeypatch.setattr("api.main.TradingAgentsGraph", fake_graph)
+
+    request = StartAnalysisRequest(
+        ticker="AAPL",
+        analysis_date="2026-07-03",
+        system_scope="TRADITIONAL",
+        selection_record_ref=_baseline_origin(),
+        analysis_purpose="BASELINE_SYSTEM",
+        strategy_profile="stockbee_momentum_burst",
+    )
+    _build_graph(request)
+
+    assert "prompt_grounding" not in captured[0]
+
+
+@pytest.mark.unit
+def test_post_runs_traditional_baseline_rejects_stockbee_grounding(client, monkeypatch):
+    monkeypatch.setattr("api.main._build_graph", lambda request: _TrivialFakeGraph())
+    monkeypatch.setattr(StreamingDeepSeekAnalysisRunner, "run", lambda self, *a, **kw: None)
+
+    # Ingest the baseline selection into the E02 candidate authority first, so
+    # the request passes the feed-origin check and reaches the Stockbee gate.
+    client.post(
+        "/api/scanner-candidates",
+        json=_candidate_mapping(
+            company_id="ticker:AAPL",
+            ticker="AAPL",
+            selections=[_selection_mapping(selection_id="traditional:AAPL:1")],
+        ),
+    )
+
+    resp = client.post(
+        "/api/runs",
+        json={
+            "ticker": "AAPL",
+            "analysis_date": "2026-07-03",
+            "system_scope": "TRADITIONAL",
+            "selection_record_ref": _baseline_origin(),
+            "analysis_purpose": "BASELINE_SYSTEM",
+            "strategy_profile": "stockbee_momentum_burst",
+        },
+    )
+
+    assert resp.status_code == 422
+    assert "Stockbee" in resp.json()["detail"]
+
+
+@pytest.mark.unit
+def test_post_runs_baseline_rejects_fabricated_selection_origin(client, monkeypatch):
+    """A shape-valid selection_record_ref that is not in the E02 candidate
+    authority is fabricated and must be rejected (B-08)."""
+    monkeypatch.setattr("api.main._build_graph", lambda request: _TrivialFakeGraph())
+    monkeypatch.setattr(StreamingDeepSeekAnalysisRunner, "run", lambda self, *a, **kw: None)
+
+    resp = client.post(
+        "/api/runs",
+        json={
+            "ticker": "AAPL",
+            "analysis_date": "2026-07-03",
+            "system_scope": "TRADITIONAL",
+            "selection_record_ref": _baseline_origin(),
+            "analysis_purpose": "BASELINE_SYSTEM",
+        },
+    )
+
+    assert resp.status_code == 422
+    assert "candidate authority" in resp.json()["detail"]
+
+
+@pytest.mark.unit
+def test_post_runs_baseline_accepts_real_feed_selection(client, monkeypatch):
+    monkeypatch.setattr("api.main._build_graph", lambda request: _TrivialFakeGraph())
+    monkeypatch.setattr(StreamingDeepSeekAnalysisRunner, "run", lambda self, *a, **kw: None)
+
+    client.post(
+        "/api/scanner-candidates",
+        json=_candidate_mapping(
+            company_id="ticker:AAPL",
+            ticker="AAPL",
+            selections=[_selection_mapping(selection_id="traditional:AAPL:1")],
+        ),
+    )
+
+    resp = client.post(
+        "/api/runs",
+        json={
+            "ticker": "AAPL",
+            "analysis_date": "2026-07-03",
+            "system_scope": "TRADITIONAL",
+            "selection_record_ref": _baseline_origin(),
+            "analysis_purpose": "BASELINE_SYSTEM",
+        },
+    )
+
+    assert resp.status_code == 202
+
+
+def _capture_context_after_worker_completion(monkeypatch):
+    from tradingagents.agents.schemas import get_governed_decision_context
+
+    finished = threading.Event()
+    context_after = []
+    original_clear = api.main.clear_governed_decision_context
+
+    def tracking_clear(token=None):
+        original_clear(token)
+        context_after.append(get_governed_decision_context())
+        finished.set()
+
+    monkeypatch.setattr("api.main.clear_governed_decision_context", tracking_clear)
+    return finished, context_after
+
+
+def _exercise_trader_and_pm_under_current_context():
+    from unittest.mock import MagicMock
+
+    from tradingagents.agents.managers.portfolio_manager import (
+        create_portfolio_manager,
+    )
+    from tradingagents.agents.schemas import (
+        EntryDecision,
+        PortfolioDecision,
+        PortfolioRating,
+        PositionState,
+        TraderAction,
+        TraderProposal,
+        get_governed_decision_context,
+    )
+    from tradingagents.agents.trader.trader import create_trader
+
+    context = get_governed_decision_context()
+    assert context == {
+        "analysis_purpose": "BASELINE_SYSTEM",
+        "system_scope": "TRADITIONAL",
+        "portfolio_eligible": True,
+    }
+
+    trader_structured = MagicMock()
+    trader_structured.invoke.return_value = TraderProposal(
+        action=TraderAction.BUY,
+        reasoning="Governed local proof.",
+        position_state=PositionState.NOT_HELD,
+        entry_decision=EntryDecision.BUY,
+    )
+    trader_llm = MagicMock()
+    trader_llm.with_structured_output.return_value = trader_structured
+    trader_result = create_trader(trader_llm)(
+        {
+            "company_of_interest": "AAPL",
+            "investment_plan": "Local governed plan.",
+        }
+    )
+    assert "**Entry Decision**: BUY" in trader_result["trader_investment_plan"]
+
+    pm_structured = MagicMock()
+    pm_structured.invoke.return_value = PortfolioDecision(
+        rating=PortfolioRating.HOLD,
+        executive_summary="Governed local proof.",
+        investment_thesis="No provider call was made.",
+    )
+    pm_llm = MagicMock()
+    pm_llm.with_structured_output.return_value = pm_structured
+    pm_result = create_portfolio_manager(pm_llm)(
+        {
+            "company_of_interest": "AAPL",
+            "investment_plan": "Local governed plan.",
+            "trader_investment_plan": trader_result["trader_investment_plan"],
+            "risk_debate_state": {
+                "history": "Local risk debate.",
+                "aggressive_history": "Aggressive.",
+                "conservative_history": "Conservative.",
+                "neutral_history": "Neutral.",
+                "latest_speaker": "Neutral",
+                "current_aggressive_response": "Aggressive.",
+                "current_conservative_response": "Conservative.",
+                "current_neutral_response": "Neutral.",
+                "count": 3,
+            },
+        }
+    )
+    assert "**Rating**: Hold" in pm_result["final_trade_decision"]
+
+
+@pytest.mark.unit
+def test_post_runs_worker_reaches_trader_pm_with_governed_context_and_clears(
+    client, monkeypatch
+):
+    finished, context_after = _capture_context_after_worker_completion(monkeypatch)
+    monkeypatch.setattr("api.main._build_graph", lambda request: _TrivialFakeGraph())
+
+    reached = []
+
+    def fake_run(self, *args, **kwargs):
+        _exercise_trader_and_pm_under_current_context()
+        reached.append(True)
+
+    monkeypatch.setattr(StreamingDeepSeekAnalysisRunner, "run", fake_run)
+    client.post(
+        "/api/scanner-candidates",
+        json=_candidate_mapping(
+            company_id="ticker:AAPL",
+            ticker="AAPL",
+            selections=[_selection_mapping(selection_id="traditional:AAPL:1")],
+        ),
+    )
+
+    resp = client.post(
+        "/api/runs",
+        json={
+            "ticker": "AAPL",
+            "analysis_date": "2026-07-03",
+            "system_scope": "TRADITIONAL",
+            "selection_record_ref": _baseline_origin(),
+            "analysis_purpose": "BASELINE_SYSTEM",
+        },
+    )
+
+    assert resp.status_code == 202
+    assert finished.wait(timeout=2)
+    assert reached == [True]
+    assert context_after == [{}]
+
+
+@pytest.mark.unit
+def test_post_runs_worker_clears_governed_context_when_runner_raises(
+    client, monkeypatch
+):
+    from tradingagents.agents.schemas import get_governed_decision_context
+
+    finished, context_after = _capture_context_after_worker_completion(monkeypatch)
+    monkeypatch.setattr("api.main._build_graph", lambda request: _TrivialFakeGraph())
+    context_during = []
+
+    def failing_run(self, *args, **kwargs):
+        context_during.append(get_governed_decision_context())
+        raise RuntimeError("local governed runner failure")
+
+    monkeypatch.setattr(StreamingDeepSeekAnalysisRunner, "run", failing_run)
+    client.post(
+        "/api/scanner-candidates",
+        json=_candidate_mapping(
+            company_id="ticker:AAPL",
+            ticker="AAPL",
+            selections=[_selection_mapping(selection_id="traditional:AAPL:1")],
+        ),
+    )
+
+    resp = client.post(
+        "/api/runs",
+        json={
+            "ticker": "AAPL",
+            "analysis_date": "2026-07-03",
+            "system_scope": "TRADITIONAL",
+            "selection_record_ref": _baseline_origin(),
+            "analysis_purpose": "BASELINE_SYSTEM",
+        },
+    )
+
+    assert resp.status_code == 202
+    assert finished.wait(timeout=2)
+    assert context_during == [
+        {
+            "analysis_purpose": "BASELINE_SYSTEM",
+            "system_scope": "TRADITIONAL",
+            "portfolio_eligible": True,
+        }
+    ]
+    assert context_after == [{}]
+
+
+@pytest.mark.unit
+def test_post_runs_baseline_origin_without_system_scope_fails_closed(client, monkeypatch):
+    monkeypatch.setattr("api.main._build_graph", lambda request: _TrivialFakeGraph())
+    monkeypatch.setattr(StreamingDeepSeekAnalysisRunner, "run", lambda self, *a, **kw: None)
+
+    resp = client.post(
+        "/api/runs",
+        json={
+            "ticker": "AAPL",
+            "analysis_date": "2026-07-03",
+            "selection_record_ref": _baseline_origin(),
+            "analysis_purpose": "BASELINE_SYSTEM",
+        },
+    )
+
+    assert resp.status_code == 422
+
+
+@pytest.mark.unit
+def test_post_runs_foreign_baseline_origin_rejected(client, monkeypatch):
+    monkeypatch.setattr("api.main._build_graph", lambda request: _TrivialFakeGraph())
+    monkeypatch.setattr(StreamingDeepSeekAnalysisRunner, "run", lambda self, *a, **kw: None)
+
+    # PRADEEP selection claimed as a TRADITIONAL baseline -> must fail closed.
+    resp = client.post(
+        "/api/runs",
+        json={
+            "ticker": "AAPL",
+            "analysis_date": "2026-07-03",
+            "system_scope": "TRADITIONAL",
+            "selection_record_ref": _baseline_origin(system="PRADEEP", selection_id="pradeep:AAPL:1"),
+            "analysis_purpose": "BASELINE_SYSTEM",
+        },
+    )
+
+    assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# G6: system-scoped memory/feedback isolation (R2 / T04 / T10)
+# ---------------------------------------------------------------------------
+
+
+from tradingagents.agents.utils.memory import TradingMemoryLog  # noqa: E402
+
+
+@pytest.mark.unit
+def test_memory_log_is_namespaced_per_system_and_eligibility(tmp_path):
+    base = str(tmp_path / "mem.md")
+    legacy = TradingMemoryLog({"memory_log_path": base})
+    traditional = TradingMemoryLog(
+        {"memory_log_path": base, "system_scope": "TRADITIONAL", "portfolio_eligible": True}
+    )
+    pradeep = TradingMemoryLog(
+        {"memory_log_path": base, "system_scope": "PRADEEP", "portfolio_eligible": True}
+    )
+
+    assert legacy._log_path.name == "mem.md"
+    assert traditional._log_path.name == "mem.traditional.md"
+    assert pradeep._log_path.name == "mem.pradeep.md"
+
+
+@pytest.mark.unit
+def test_manual_scoped_memory_does_not_enter_baseline(tmp_path):
+    base = str(tmp_path / "mem.md")
+    manual = TradingMemoryLog(
+        {
+            "memory_log_path": base,
+            "system_scope": "TRADITIONAL",
+            "portfolio_eligible": False,
+            "analysis_purpose": "OWNER_MANUAL_REVIEW",
+        }
+    )
+    baseline = TradingMemoryLog(
+        {
+            "memory_log_path": base,
+            "system_scope": "TRADITIONAL",
+            "portfolio_eligible": True,
+        }
+    )
+
+    manual.store_decision("AAPL", "2026-08-10", "FINAL TRANSACTION PROPOSAL: **BUY**")
+    manual.update_with_outcome(
+        "AAPL", "2026-08-10", raw_return=0.1, alpha_return=0.05, holding_days=5, reflection="manual"
+    )
+
+    assert "AAPL" in manual.get_past_context("AAPL")
+    # A same-system manual (portfolio-ineligible) run must never feed a later
+    # eligible baseline decision.
+    assert baseline.get_past_context("AAPL") == ""
+
+
+@pytest.mark.unit
+def test_traditional_memory_never_reads_pradeep_entries(tmp_path):
+    base = str(tmp_path / "mem.md")
+    traditional = TradingMemoryLog(
+        {"memory_log_path": base, "system_scope": "TRADITIONAL", "portfolio_eligible": True}
+    )
+    pradeep = TradingMemoryLog(
+        {"memory_log_path": base, "system_scope": "PRADEEP", "portfolio_eligible": True}
+    )
+
+    traditional.store_decision("AAPL", "2026-08-10", "FINAL TRANSACTION PROPOSAL: **BUY**")
+    traditional.update_with_outcome(
+        "AAPL", "2026-08-10", raw_return=0.1, alpha_return=0.05, holding_days=5, reflection="worked"
+    )
+
+    assert "AAPL" in traditional.get_past_context("AAPL")
+    # The Pradeep-scoped log must not see the Traditional-scoped entry.
+    assert pradeep.get_past_context("AAPL") == ""
+
+
+@pytest.mark.unit
+def test_scoped_baseline_memory_does_not_read_legacy_unscoped_log(tmp_path):
+    base = str(tmp_path / "mem.md")
+    legacy = TradingMemoryLog({"memory_log_path": base})
+    traditional = TradingMemoryLog(
+        {"memory_log_path": base, "system_scope": "TRADITIONAL", "portfolio_eligible": True}
+    )
+
+    legacy.store_decision("AAPL", "2026-08-10", "FINAL TRANSACTION PROPOSAL: **SELL**")
+    legacy.update_with_outcome(
+        "AAPL", "2026-08-10", raw_return=-0.1, alpha_return=-0.05, holding_days=5, reflection="missed"
+    )
+
+    assert "AAPL" in legacy.get_past_context("AAPL")
+    # A scoped baseline must not silently consume legacy unscoped memory.
+    assert traditional.get_past_context("AAPL") == ""

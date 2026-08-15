@@ -23,6 +23,7 @@ from tradingagents.run_contract import (
     StrategyProfile,
     Ticker,
 )
+from tradingagents.scanners.unified import AnalysisPurpose, SelectionSystem
 
 
 class RunSummary(BaseModel):
@@ -62,6 +63,13 @@ class StartAnalysisRequest(BaseModel):
     # _build_graph or any analysis logic. Defaults to null ("manual
     # analysis, no profile").
     strategy_profile: StrategyProfile = None
+    # Level-2 boundary enrichment (G5/R3): selection-origin thread. The
+    # browser already holds exact E02 selection provenance; these fields
+    # carry it end-to-end so the backend never has to infer origin from a
+    # ticker (unsafe: one company can carry multiple system selections).
+    system_scope: SelectionSystem | None = None
+    selection_record_ref: dict | None = None
+    analysis_purpose: AnalysisPurpose | None = None
 
     @field_validator("selected_analysts")
     @classmethod

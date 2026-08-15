@@ -8,14 +8,19 @@ around those policies and never performs network or model work.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from types import MappingProxyType
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from tradingagents.dataflows.canonical_data import Availability, CanonicalData
+
+if TYPE_CHECKING:  # pragma: no cover - annotations only, never imported at runtime
+    from tradingagents.scanners.unified import SharedFact, SystemEvidenceClaim
 
 MAX_UNAVAILABLE_DETERMINISTIC_WEIGHT = 0.25
 MIN_PEER_COUNT = 20
@@ -413,6 +418,132 @@ class AIResearch:
         return structural + tuple(self.ai_impact.dimensions.values()) + self.counter_thesis.major_judgments
 
 
+class StructuralDisruptionRootQuestion(str, Enum):
+    """The six frozen Structural Disruption root questions (FZ-SD-001..006).
+
+    A Traditional long-term candidate MUST cover all six.  These are stable
+    coverage semantics, not versionable sub-dimensions: the exact question
+    set is frozen, while per-question findings and evidence remain
+    caller-owned and versionable.
+    """
+
+    CUSTOMER_JOB_VALUE_ENGINE = "CUSTOMER_JOB_VALUE_ENGINE"
+    OUTSIDE_SUBSTITUTE = "OUTSIDE_SUBSTITUTE"
+    MIGRATION_EVIDENCE_VELOCITY = "MIGRATION_EVIDENCE_VELOCITY"
+    ECONOMIC_TRANSMISSION = "ECONOMIC_TRANSMISSION"
+    INCUMBENT_ADAPTATION_COUNTERATTACK = "INCUMBENT_ADAPTATION_COUNTERATTACK"
+    TIMING_FALSIFICATION_CONFIDENCE = "TIMING_FALSIFICATION_CONFIDENCE"
+
+
+STRUCTURAL_DISRUPTION_ROOT_QUESTIONS = frozenset(StructuralDisruptionRootQuestion)
+
+
+@dataclass(frozen=True, slots=True)
+class StructuralDisruptionFinding:
+    """One root question's structured, evidence-bearing finding.
+
+    Carries evidence and counter-evidence (FZ-SD-001..006 / FZ-EXP-001) plus
+    the question-specific structured rationale fields: economic transmission
+    (Q4), incumbent adaptation/counterattack (Q5), and timing / falsification
+    / confidence / major unknowns (Q6).  ``methodology_rule_refs`` preserves
+    the derivation path for later methodology explanations (CUR-007).
+    """
+
+    evidence: tuple[str, ...]
+    counter_evidence: tuple[str, ...]
+    conclusion: str
+    economic_transmission: str | None = None
+    incumbent_adaptation: str | None = None
+    expected_horizon: str | None = None
+    falsification_condition: str | None = None
+    confidence: str | None = None
+    major_unknowns: tuple[str, ...] = ()
+    methodology_rule_refs: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.evidence:
+            raise ContractViolation("structural-disruption finding requires evidence")
+        for text in self.evidence:
+            _nonempty(text, "structural-disruption evidence")
+        for text in self.counter_evidence:
+            _nonempty(text, "structural-disruption counter-evidence")
+        for text in self.major_unknowns:
+            _nonempty(text, "structural-disruption major_unknowns")
+        for ref in self.methodology_rule_refs:
+            _nonempty(ref, "structural-disruption methodology_rule_refs")
+        _nonempty(self.conclusion, "structural-disruption conclusion")
+
+
+@dataclass(frozen=True, slots=True)
+class StructuralDisruptionAssessment:
+    """Frozen coverage contract over the six root questions (CUR-001)."""
+
+    method_version: str
+    questions: Mapping[StructuralDisruptionRootQuestion, StructuralDisruptionFinding]
+
+    def __post_init__(self) -> None:
+        _nonempty(self.method_version, "structural-disruption method_version")
+        object.__setattr__(
+            self,
+            "questions",
+            MappingProxyType(
+                {
+                    StructuralDisruptionRootQuestion(question): finding
+                    for question, finding in self.questions.items()
+                }
+            ),
+        )
+        _validate_structural_disruption_6q(self)
+
+
+def _validate_structural_disruption_6q(assessment: StructuralDisruptionAssessment) -> None:
+    """Fail closed unless the assessment covers all six frozen root questions."""
+    questions = assessment.questions
+    if set(questions) != STRUCTURAL_DISRUPTION_ROOT_QUESTIONS:
+        missing = sorted(
+            question.value for question in STRUCTURAL_DISRUPTION_ROOT_QUESTIONS - set(questions)
+        )
+        extra = sorted(
+            question.value for question in set(questions) - STRUCTURAL_DISRUPTION_ROOT_QUESTIONS
+        )
+        raise ContractViolation(
+            "structural disruption must cover exactly the six frozen root questions; "
+            f"missing={missing!r} extra={extra!r}"
+        )
+    for question, finding in questions.items():
+        if not isinstance(finding, StructuralDisruptionFinding):
+            raise ContractViolation(
+                f"structural-disruption question {question.value} requires a finding"
+            )
+    timing = questions[StructuralDisruptionRootQuestion.TIMING_FALSIFICATION_CONFIDENCE]
+    if not (timing.expected_horizon and timing.falsification_condition and timing.confidence):
+        raise ContractViolation(
+            "TIMING_FALSIFICATION_CONFIDENCE requires expected_horizon, "
+            "falsification_condition, and confidence"
+        )
+    if not timing.counter_evidence:
+        raise ContractViolation(
+            "TIMING_FALSIFICATION_CONFIDENCE requires counter-evidence (evidence against)"
+        )
+    transmission = questions[StructuralDisruptionRootQuestion.ECONOMIC_TRANSMISSION]
+    if not transmission.economic_transmission:
+        raise ContractViolation("ECONOMIC_TRANSMISSION requires an economic-transmission path")
+    adaptation = questions[
+        StructuralDisruptionRootQuestion.INCUMBENT_ADAPTATION_COUNTERATTACK
+    ]
+    if not adaptation.incumbent_adaptation:
+        raise ContractViolation(
+            "INCUMBENT_ADAPTATION_COUNTERATTACK requires an incumbent-adaptation analysis"
+        )
+
+
+def validate_structural_disruption_6q(assessment: StructuralDisruptionAssessment) -> None:
+    """Public fail-closed validator for the six-question coverage contract."""
+    if not isinstance(assessment, StructuralDisruptionAssessment):
+        raise ContractViolation("assessment must be a StructuralDisruptionAssessment")
+    _validate_structural_disruption_6q(assessment)
+
+
 @dataclass(frozen=True, slots=True)
 class DecisionContext:
     gate_scores: Mapping[Gate, float | None]
@@ -497,6 +628,7 @@ class ScanRequest:
     ai_research: AIResearch
     decision_policy: DecisionPolicy
     ai_influence_policy: AIInfluencePolicy
+    structural_disruption: StructuralDisruptionAssessment
     ai_overlay: AIOverlay = AIOverlay()
 
     def __post_init__(self) -> None:
@@ -505,6 +637,10 @@ class ScanRequest:
         for key, item in self.evidence.items():
             if key != item.metric_id:
                 raise ContractViolation("evidence mapping keys must equal metric_id")
+        if not isinstance(self.structural_disruption, StructuralDisruptionAssessment):
+            raise ContractViolation(
+                "structural_disruption must be a StructuralDisruptionAssessment"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -573,6 +709,9 @@ class TraditionalScanResult:
     data_confidence_method_version: str
     decision_method_version: str
     ai_method_version: str
+    structural_disruption: StructuralDisruptionAssessment
+    shared_facts: tuple[SharedFact, ...] = ()
+    system_evidence_claims: tuple[SystemEvidenceClaim, ...] = ()
 
 
 def _canonical_issue(
@@ -715,8 +854,233 @@ def _compute_peer_relative(
     )
 
 
+def _payload_repr(payload: Any) -> Any:
+    """A deterministic, JSON-stable representation of an observed payload."""
+    if isinstance(payload, Mapping):
+        return {str(key): _payload_repr(value) for key, value in payload.items()}
+    if isinstance(payload, (list, tuple)):
+        return [_payload_repr(value) for value in payload]
+    if isinstance(payload, bool):
+        return payload
+    if isinstance(payload, (int, str)) or payload is None:
+        return payload
+    if isinstance(payload, float):
+        return payload if math.isfinite(payload) else repr(payload)
+    return repr(payload)
+
+
+def _observation_key(data: CanonicalData[Any]) -> str:
+    """Stable identity of one underlying observation / causal chain.
+
+    Two metric analyses that read the same canonical observation (same issuer
+    symbol, source, as-of, reporting period, and observed payload) resolve to
+    the same key, so correlated evidence is established once and only
+    referenced thereafter (FZ-DATA-004 / CUR-002).
+    """
+    return json.dumps(
+        {
+            "symbol": data.symbol,
+            "source": data.source,
+            "provider": data.provider,
+            "operation": data.operation,
+            "data_as_of": None if data.data_as_of is None else data.data_as_of.isoformat(),
+            "reporting_period": data.reporting_period,
+            "unit": data.unit,
+            "currency": data.currency,
+            "payload": _payload_repr(data.payload),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+
+
+def _fact_identity(entity: str, data: CanonicalData[Any]) -> str:
+    """Deterministic identity for one methodology-neutral canonical fact.
+
+    The identity is a pure function of the company entity and the underlying
+    observation identity (NOT the reading metric), so two metrics that read
+    the same canonical observation always resolve to the same fact reference.
+    This is the de-duplication anchor (FZ-DATA-004 / CUR-002).
+    """
+    digest = hashlib.sha256(_observation_key(data).encode("utf-8")).hexdigest()[:32]
+    return f"fact:{entity}:{digest}"
+
+
+def _fact_source_ref(data: CanonicalData[Any]) -> str:
+    provenance = {
+        "symbol": data.symbol,
+        "source": data.source,
+        "provider": data.provider,
+        "operation": data.operation,
+        "reporting_period": data.reporting_period,
+        "unit": data.unit,
+        "currency": data.currency,
+    }
+    return json.dumps(provenance, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+
+
+def _build_shared_facts(
+    entity: str, evidence_inputs: Mapping[str, EvidenceInput]
+) -> tuple[SharedFact, ...]:
+    """Build methodology-neutral facts from the canonical evidence actually
+    consumed by the compiler, de-duplicated by underlying-observation identity
+    BEFORE any scoring (FZ-DATA-004 / CUR-002).
+
+    The fact text carries the actual observed value/content and the source
+    reference carries provenance; two metrics reading the same observation
+    resolve to one fact identity and are never counted twice.
+    """
+    from tradingagents.scanners.unified import SharedFact
+
+    facts: dict[str, SharedFact] = {}
+    for metric_id in sorted(evidence_inputs):
+        item = evidence_inputs[metric_id]
+        data = item.data
+        if data.availability is not Availability.AVAILABLE:
+            continue
+        fact_id = _fact_identity(entity, data)
+        if fact_id in facts:
+            continue
+        data_as_of = None if data.data_as_of is None else data.data_as_of.isoformat()
+        facts[fact_id] = SharedFact(
+            fact_id=fact_id,
+            fact_type="canonical_observation",
+            fact=(
+                f"canonical observation for {data.symbol or entity} from "
+                f"{data.source or data.provider}, period "
+                f"{data.reporting_period or 'unknown'}: "
+                f"{_payload_repr(data.payload)} ({data.unit or 'unit not supplied'})"
+            ),
+            source_refs=(_fact_source_ref(data),),
+            data_as_of=data_as_of,
+            provenance=_fact_source_ref(data),
+        )
+    return tuple(facts[fact_id] for fact_id in sorted(facts))
+
+
+def _fact_id_by_metric(
+    entity: str, evidence_inputs: Mapping[str, EvidenceInput]
+) -> dict[str, str]:
+    """Map each available metric to its de-duplicated underlying fact identity."""
+    result: dict[str, str] = {}
+    for metric_id, item in evidence_inputs.items():
+        data = item.data
+        if data.availability is not Availability.AVAILABLE:
+            continue
+        result[metric_id] = _fact_identity(entity, data)
+    return result
+
+
+def _build_structural_disruption_claim(
+    entity: str, assessment: StructuralDisruptionAssessment
+) -> SystemEvidenceClaim:
+    """A Traditional-scoped claim carrying the Structural Disruption 6Q
+    rationale (evidence, counter-evidence, falsification, timing, confidence)
+    and its methodology rule references (CUR-001/007 / FZ-SD)."""
+    from tradingagents.scanners.unified import SelectionSystem, SystemEvidenceClaim
+
+    parts: list[str] = [f"Structural Disruption 6Q ({assessment.method_version})"]
+    refs: set[str] = set()
+    for question in StructuralDisruptionRootQuestion:
+        finding = assessment.questions[question]
+        parts.append(f"{question.value}: {finding.conclusion}")
+        if finding.evidence:
+            parts.append(f"  evidence={'; '.join(finding.evidence)}")
+        if finding.counter_evidence:
+            parts.append(f"  counter_evidence={'; '.join(finding.counter_evidence)}")
+        if finding.economic_transmission:
+            parts.append(f"  economic_transmission={finding.economic_transmission}")
+        if finding.incumbent_adaptation:
+            parts.append(f"  incumbent_adaptation={finding.incumbent_adaptation}")
+        if finding.expected_horizon:
+            parts.append(f"  expected_horizon={finding.expected_horizon}")
+        if finding.falsification_condition:
+            parts.append(f"  falsification_condition={finding.falsification_condition}")
+        if finding.confidence:
+            parts.append(f"  confidence={finding.confidence}")
+        if finding.major_unknowns:
+            parts.append(f"  major_unknowns={'; '.join(finding.major_unknowns)}")
+        refs.update(finding.methodology_rule_refs)
+    return SystemEvidenceClaim(
+        claim_id=f"claim:traditional:{entity}:structural_disruption_6q",
+        system_scope=SelectionSystem.TRADITIONAL,
+        claim_type="structural_disruption_6q",
+        fact_refs=(),
+        claim="\n".join(parts),
+        confidence="high",
+        methodology_rule_refs=tuple(sorted(refs)),
+        data_as_of=None,
+        provenance="traditional_e04_compiler",
+    )
+
+
+def _build_system_evidence_claims(
+    entity: str,
+    evaluations: Mapping[str, MetricEvaluation],
+    gate_evaluations: Mapping[Gate, GateEvaluation],
+    fact_id_by_metric: Mapping[str, str],
+    structural_disruption: StructuralDisruptionAssessment,
+) -> tuple[SystemEvidenceClaim, ...]:
+    """Build Traditional-scoped evidence claims, one per gate conclusion, plus
+    one structural-disruption rationale claim (FZ-DATA-003/004).
+
+    Each gate claim references the de-duplicated shared facts its gate was
+    computed from (by underlying-observation identity), so a correlated
+    evidence source is never counted as an independent fact more than once.
+    """
+    from tradingagents.scanners.unified import SelectionSystem, SystemEvidenceClaim
+
+    confidence_by_status = {
+        GateStatus.PASS: "high",
+        GateStatus.REVIEW_REQUIRED: "medium",
+        GateStatus.FAIL: "low",
+    }
+    claims: list[SystemEvidenceClaim] = []
+    for gate in Gate:
+        evaluation = gate_evaluations[gate]
+        metric_ids = sorted(
+            metric_id for metric_id, item in evaluations.items() if item.gate is gate
+        )
+        fact_refs = tuple(
+            sorted(
+                {
+                    fact_id_by_metric[metric_id]
+                    for metric_id in metric_ids
+                    if metric_id in fact_id_by_metric
+                }
+            )
+        )
+        method_refs = tuple(
+            sorted({evaluations[metric_id].method_version for metric_id in metric_ids})
+        )
+        claim = f"{gate.value} {evaluation.status.value}"
+        if evaluation.score is not None:
+            claim += f" score={evaluation.score:.4f}"
+        if evaluation.reasons:
+            claim += f" reasons={','.join(evaluation.reasons)}"
+        claims.append(
+            SystemEvidenceClaim(
+                claim_id=f"claim:traditional:{entity}:{gate.value}",
+                system_scope=SelectionSystem.TRADITIONAL,
+                claim_type="gate_conclusion",
+                fact_refs=fact_refs,
+                claim=claim,
+                confidence=confidence_by_status[evaluation.status],
+                methodology_rule_refs=method_refs,
+                data_as_of=None,
+                provenance="traditional_e04_compiler",
+            )
+        )
+    claims.append(_build_structural_disruption_claim(entity, structural_disruption))
+    return tuple(claims)
+
+
 def compile_traditional_scan(request: ScanRequest) -> TraditionalScanResult:
     """Compile canonical evidence under caller-owned methods and E04 invariants."""
+    # Fail closed on any six-question coverage gap before any scoring work
+    # (FZ-SD / CUR-001). The request-level assessment is already validated at
+    # construction; this is the deterministic compiler-side re-assertion.
+    validate_structural_disruption_6q(request.structural_disruption)
     rules = tuple(
         rule for rule in request.metric_recipe.rules if rule.applies_to(request.economic_profile)
     )
@@ -742,6 +1106,13 @@ def compile_traditional_scan(request: ScanRequest) -> TraditionalScanResult:
     if any(rule_by_id[metric_id].gate is not Gate.G3 for metric_id in valuation_ids):
         raise ContractViolation("all valuation dimensions must bind to G3 rules")
 
+    # CUR-002 / FZ-DATA-004: establish canonical methodology-neutral facts from
+    # the raw canonical evidence BEFORE any scoring, de-duplicated by
+    # underlying-observation identity so correlated evidence can never be
+    # counted as independent inputs to a score/gate/decision.
+    shared_facts = _build_shared_facts(request.entity, request.evidence)
+    fact_id_by_metric = _fact_id_by_metric(request.entity, request.evidence)
+
     total_weight = sum(rule.weight for rule in rules)
     pending: list[tuple[MetricRule, EvidenceInput | None, str | None, float | None]] = []
     missing_weight = 0.0
@@ -765,6 +1136,31 @@ def compile_traditional_scan(request: ScanRequest) -> TraditionalScanResult:
             if rule.critical:
                 critical_issues.append(f"{rule.metric_id}:{issue}")
         pending.append((rule, evidence, issue, score))
+
+    # A SharedFact may legitimately support several methodology claims, but
+    # two score-bearing metrics in one gate may not count the same underlying
+    # observation twice. Detect that collision before effective weights or
+    # weighted contributions are assigned, and fail the entire affected gate
+    # closed to REVIEW_REQUIRED rather than inventing a weight-sharing rule.
+    scored_fact_metrics: dict[tuple[Gate, str], list[str]] = {}
+    for rule, _evidence, _issue, score in pending:
+        fact_id = fact_id_by_metric.get(rule.metric_id)
+        if score is not None and fact_id is not None:
+            scored_fact_metrics.setdefault((rule.gate, fact_id), []).append(
+                rule.metric_id
+            )
+    duplicate_fact_reasons: dict[Gate, tuple[str, ...]] = {}
+    for (gate, fact_id), metric_ids in scored_fact_metrics.items():
+        if len(metric_ids) >= 2:
+            reason = (
+                f"DUPLICATE_SCORE_BEARING_FACT:{fact_id}:"
+                f"{','.join(sorted(metric_ids))}"
+            )
+            duplicate_fact_reasons[gate] = (
+                *duplicate_fact_reasons.get(gate, ()),
+                reason,
+            )
+    duplicate_fact_gates = frozenset(duplicate_fact_reasons)
 
     unavailable_fraction = missing_weight / total_weight
     coverage_failed = unavailable_fraction > MAX_UNAVAILABLE_DETERMINISTIC_WEIGHT
@@ -793,7 +1189,12 @@ def compile_traditional_scan(request: ScanRequest) -> TraditionalScanResult:
     for rule, evidence, issue, score in pending:
         effective_weight = None
         contribution = None
-        if score is not None and deterministic_core_eligible and available_weight > 0:
+        if (
+            score is not None
+            and deterministic_core_eligible
+            and available_weight > 0
+            and rule.gate not in duplicate_fact_gates
+        ):
             effective_weight = rule.weight / available_weight
             contribution = effective_weight * score
         evaluations[rule.metric_id] = MetricEvaluation(
@@ -832,7 +1233,10 @@ def compile_traditional_scan(request: ScanRequest) -> TraditionalScanResult:
         available = [item for item in gate_items if item.transformed_score is not None]
         gate_weight = sum(item.original_weight for item in available)
         score = None
-        if deterministic_core_eligible and gate_weight > 0:
+        if gate in duplicate_fact_gates:
+            status = GateStatus.REVIEW_REQUIRED
+            reasons = duplicate_fact_reasons[gate]
+        elif deterministic_core_eligible and gate_weight > 0:
             score = _unit_interval(
                 request.metric_recipe.score_aggregator(
                     tuple(
@@ -842,9 +1246,13 @@ def compile_traditional_scan(request: ScanRequest) -> TraditionalScanResult:
                 ),
                 f"aggregate score for {gate.value}",
             )
+            minimum = request.gate_policy.minimum_scores[gate]
+            status = GateStatus.PASS if score >= minimum else GateStatus.FAIL
+            reasons = () if status is GateStatus.PASS else ("GOVERNED_THRESHOLD_NOT_MET",)
+        else:
+            status = GateStatus.FAIL
+            reasons = ("GOVERNED_THRESHOLD_NOT_MET",)
         minimum = request.gate_policy.minimum_scores[gate]
-        status = GateStatus.PASS if score is not None and score >= minimum else GateStatus.FAIL
-        reasons = () if status is GateStatus.PASS else ("GOVERNED_THRESHOLD_NOT_MET",)
         gate_evaluations[gate] = GateEvaluation(
             gate, status, score, minimum, gate in request.gate_policy.hard_gates, reasons
         )
@@ -866,7 +1274,9 @@ def compile_traditional_scan(request: ScanRequest) -> TraditionalScanResult:
         {
             metric_id: item
             for metric_id, item in evaluations.items()
-            if item.gate in {Gate.G1, Gate.G2} and item.transformed_score is not None
+            if item.gate in {Gate.G1, Gate.G2}
+            and item.gate not in duplicate_fact_gates
+            and item.transformed_score is not None
         }
     )
     company_quality = None
@@ -920,6 +1330,7 @@ def compile_traditional_scan(request: ScanRequest) -> TraditionalScanResult:
         deterministic_core_eligible
         and not deterministic_hard_fail
         and not deterministic_hard_review
+        and not duplicate_fact_gates
     )
     hard_fail = deterministic_hard_fail or (
         Gate.G6 in request.gate_policy.hard_gates and g6_status is GateStatus.FAIL
@@ -933,7 +1344,11 @@ def compile_traditional_scan(request: ScanRequest) -> TraditionalScanResult:
     candidate_tier = None
     applied_action = AIAction.NONE
     vetoed = False
-    review_required = hard_review or g6_status is GateStatus.REVIEW_REQUIRED
+    review_required = (
+        hard_review
+        or g6_status is GateStatus.REVIEW_REQUIRED
+        or bool(duplicate_fact_gates)
+    )
     if deterministic_qualified and g6_status is GateStatus.PASS:
         base_tier = _nonempty(request.decision_policy.base_tier_selector(context), "base tier")
         if base_tier not in request.decision_policy.tier_scale:
@@ -1024,6 +1439,10 @@ def compile_traditional_scan(request: ScanRequest) -> TraditionalScanResult:
         Gate.G7, g7_status, None, None, False, g7_reasons
     )
 
+    system_evidence_claims = _build_system_evidence_claims(
+        request.entity, evaluations, gate_evaluations, fact_id_by_metric, request.structural_disruption
+    )
+
     return TraditionalScanResult(
         entity=request.entity,
         economic_profile=request.economic_profile,
@@ -1046,4 +1465,7 @@ def compile_traditional_scan(request: ScanRequest) -> TraditionalScanResult:
         data_confidence_method_version=request.data_confidence_policy.method_version,
         decision_method_version=request.decision_policy.method_version,
         ai_method_version=request.ai_influence_policy.method_version,
+        structural_disruption=request.structural_disruption,
+        shared_facts=shared_facts,
+        system_evidence_claims=system_evidence_claims,
     )

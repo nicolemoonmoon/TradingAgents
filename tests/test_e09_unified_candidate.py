@@ -63,6 +63,46 @@ def _canonical() -> CanonicalData[dict[str, float]]:
     )
 
 
+def _structural_disruption():
+    from tradingagents.scanners.traditional import (
+        StructuralDisruptionAssessment,
+        StructuralDisruptionFinding,
+        StructuralDisruptionRootQuestion,
+    )
+
+    root = StructuralDisruptionRootQuestion
+
+    def finding(conclusion, counter_evidence=(), **kwargs):
+        return StructuralDisruptionFinding(
+            evidence=("evidence",),
+            counter_evidence=counter_evidence,
+            conclusion=conclusion,
+            **kwargs,
+        )
+
+    return StructuralDisruptionAssessment(
+        method_version="sd-owner-v1",
+        questions={
+            root.CUSTOMER_JOB_VALUE_ENGINE: finding("job/value engine"),
+            root.OUTSIDE_SUBSTITUTE: finding("substitute"),
+            root.MIGRATION_EVIDENCE_VELOCITY: finding("migration"),
+            root.ECONOMIC_TRANSMISSION: finding(
+                "transmission", economic_transmission="path"
+            ),
+            root.INCUMBENT_ADAPTATION_COUNTERATTACK: finding(
+                "adaptation", incumbent_adaptation="pivot"
+            ),
+            root.TIMING_FALSIFICATION_CONFIDENCE: finding(
+                "timing",
+                counter_evidence=("counter",),
+                expected_horizon="12m",
+                falsification_condition="cond",
+                confidence="medium",
+            ),
+        },
+    )
+
+
 def _traditional_result(*, selected: bool) -> TraditionalScanResult:
     metric = MetricEvaluation(
         metric_id="financial_reality",
@@ -111,6 +151,7 @@ def _traditional_result(*, selected: bool) -> TraditionalScanResult:
         data_confidence_method_version="confidence-v1",
         decision_method_version="decision-v1",
         ai_method_version="ai-v1",
+        structural_disruption=_structural_disruption(),
     )
 
 
@@ -513,3 +554,366 @@ def test_evidence_exact_bounds_and_types_are_validated():
         EvidenceRef("id", "x" * 81, "ref", None, None)
     with pytest.raises(UnifiedCandidateError, match="finite"):
         SystemRank(float("nan"), "local", True)
+
+
+# ---------------------------------------------------------------------------
+# G2/G5: system-scoped evidence/snapshot/decision contract + selection-origin
+# contamination guards (FZ-DATA-003/005, FZ-SEL-001..004; T01-T16 equivalents)
+# ---------------------------------------------------------------------------
+
+
+from tradingagents.scanners.unified import (  # noqa: E402
+    AnalysisPurpose,
+    SelectionRecordRef,
+    SharedFact,
+    SystemAnalysisSnapshot,
+    SystemDecisionEvent,
+    SystemEvidenceClaim,
+    SystemPortfolioContext,
+    build_traditional_snapshot,
+    derive_analysis_governance,
+)
+
+
+def _trad_ref(selection_id="traditional:ACME:1"):
+    return SelectionRecordRef(selection_id, SelectionSystem.TRADITIONAL, "ticker:ACME")
+
+
+def _pradeep_ref(selection_id="pradeep:ACME:1"):
+    return SelectionRecordRef(selection_id, SelectionSystem.PRADEEP, "ticker:ACME")
+
+
+def _snapshot(
+    *,
+    system=SelectionSystem.TRADITIONAL,
+    purpose=AnalysisPurpose.BASELINE_SYSTEM,
+    eligible=True,
+    ref=None,
+):
+    if ref is None:
+        ref = _trad_ref() if system is SelectionSystem.TRADITIONAL else _pradeep_ref()
+    return SystemAnalysisSnapshot(
+        snapshot_id="snap:1",
+        system_scope=system,
+        methodology_version="v1",
+        data_as_of=None,
+        candidate_ref="ticker:ACME",
+        selection_record_ref=ref,
+        analysis_purpose=purpose,
+        portfolio_eligible=eligible,
+        shared_fact_refs=("fact:1",),
+        system_evidence_claim_refs=("claim:1",),
+        provenance_refs=("prov:1",),
+        payload_type="TraditionalAnalysisPayload",
+        payload_hash="abc123",
+    )
+
+
+def _decision(*, system=SelectionSystem.TRADITIONAL, snapshot_id="snap:1"):
+    ref = _trad_ref() if system is SelectionSystem.TRADITIONAL else _pradeep_ref()
+    return SystemDecisionEvent(
+        decision_id="decision:1",
+        system_scope=system,
+        unified_candidate_ref="ticker:ACME",
+        selection_record_ref=ref,
+        analysis_purpose=AnalysisPurpose.BASELINE_SYSTEM,
+        portfolio_eligible=True,
+        decision_time="2026-08-10T03:00:00+00:00",
+        data_as_of=None,
+        position_state_at_decision="NOT_HELD",
+        action_intent="BUY",
+        methodology_decision_code="E04_G7_BUY",
+        reason_summary="summary",
+        analysis_snapshot_ref=snapshot_id,
+        analysis_snapshot_hash="abc123",
+    )
+
+
+@pytest.mark.unit
+def test_t03_shared_fact_has_no_methodology_fields():
+    forbidden = (
+        "selection_score",
+        "setup_score",
+        "traditional_score",
+        "pradeep_score",
+        "technology_score",
+        "bullish_conclusion",
+        "bearish_conclusion",
+        "entry_recommendation",
+        "position_recommendation",
+        "methodology_weight",
+        "methodology_rank",
+    )
+    fields = set(SharedFact.__dataclass_fields__)
+    assert not fields & set(forbidden)
+    fact = SharedFact(
+        fact_id="fact:1",
+        fact_type="filing",
+        fact="issuer reported revenue",
+        source_refs=("issuer:filing:1",),
+        data_as_of="2026-08-08",
+        provenance="issuer",
+    )
+    assert fact.fact_type == "filing"
+
+
+@pytest.mark.unit
+def test_t01_foreign_claim_read_rejected():
+    claim = SystemEvidenceClaim(
+        claim_id="claim:1",
+        system_scope=SelectionSystem.TRADITIONAL,
+        claim_type="valuation",
+        fact_refs=("fact:1",),
+        claim="fairly valued",
+        confidence="medium",
+        methodology_rule_refs=("G3-rule",),
+        data_as_of="2026-08-08",
+        provenance="issuer",
+    )
+    claim.require_system_scope(SelectionSystem.TRADITIONAL)  # own system: ok
+    with pytest.raises(UnifiedCandidateError, match="CROSS_SYSTEM_CONTAMINATION"):
+        claim.require_system_scope(SelectionSystem.PRADEEP)
+
+
+@pytest.mark.unit
+def test_t05_decision_event_system_matches_snapshot_system():
+    traditional_snapshot = _snapshot(system=SelectionSystem.TRADITIONAL)
+    pradeep_snapshot = _snapshot(system=SelectionSystem.PRADEEP)
+    traditional_decision = _decision(system=SelectionSystem.TRADITIONAL)
+
+    traditional_decision.require_matches_snapshot(traditional_snapshot)  # ok
+    with pytest.raises(UnifiedCandidateError, match="CROSS_SYSTEM_CONTAMINATION"):
+        traditional_decision.require_matches_snapshot(pradeep_snapshot)
+
+
+@pytest.mark.unit
+def test_t02_foreign_snapshot_ref_rejected():
+    with pytest.raises(UnifiedCandidateError, match="baseline selection origin"):
+        _snapshot(system=SelectionSystem.TRADITIONAL, ref=_pradeep_ref())
+
+
+@pytest.mark.unit
+def test_t11_baseline_selection_origin_matches_system():
+    governance = derive_analysis_governance(
+        SelectionSystem.TRADITIONAL, _trad_ref(), AnalysisPurpose.BASELINE_SYSTEM
+    )
+    assert governance.analysis_purpose is AnalysisPurpose.BASELINE_SYSTEM
+    assert governance.system_scope is SelectionSystem.TRADITIONAL
+    assert governance.portfolio_eligible is True
+
+
+@pytest.mark.unit
+def test_t06_t07_baseline_rejects_foreign_selection():
+    with pytest.raises(UnifiedCandidateError, match="foreign selection"):
+        derive_analysis_governance(
+            SelectionSystem.TRADITIONAL, _pradeep_ref(), AnalysisPurpose.BASELINE_SYSTEM
+        )
+    with pytest.raises(UnifiedCandidateError, match="foreign selection"):
+        derive_analysis_governance(
+            SelectionSystem.PRADEEP, _trad_ref(), AnalysisPurpose.BASELINE_SYSTEM
+        )
+
+
+@pytest.mark.unit
+def test_t12_exploratory_foreign_candidate_portfolio_ineligible():
+    governance = derive_analysis_governance(
+        SelectionSystem.TRADITIONAL, _pradeep_ref(), AnalysisPurpose.EXPLORATORY_COMPARE
+    )
+    assert governance.analysis_purpose is AnalysisPurpose.EXPLORATORY_COMPARE
+    assert governance.portfolio_eligible is False
+
+
+@pytest.mark.unit
+def test_t13_manual_candidate_portfolio_ineligible_without_own_selection():
+    governance = derive_analysis_governance(None, None, None)
+    assert governance.analysis_purpose is AnalysisPurpose.OWNER_MANUAL_REVIEW
+    assert governance.system_scope is None
+    assert governance.portfolio_eligible is False
+
+    with pytest.raises(UnifiedCandidateError, match="missing origin"):
+        derive_analysis_governance(None, None, AnalysisPurpose.BASELINE_SYSTEM)
+
+
+@pytest.mark.unit
+def test_origin_requires_explicit_system_scope_not_inferred():
+    with pytest.raises(UnifiedCandidateError, match="explicit system_scope"):
+        derive_analysis_governance(None, _trad_ref(), AnalysisPurpose.BASELINE_SYSTEM)
+
+
+@pytest.mark.unit
+def test_t09_cross_system_combined_score_absent_in_new_objects():
+    for cls in (
+        SharedFact,
+        SystemEvidenceClaim,
+        SystemAnalysisSnapshot,
+        SystemDecisionEvent,
+    ):
+        fields = set(cls.__dataclass_fields__)
+        assert not fields & {"combined_score", "cross_system_score", "overall_score"}
+
+
+@pytest.mark.unit
+def test_t16_no_promotion_or_ledger_engine_symbols():
+    forbidden = {
+        "promote",
+        "promotion",
+        "promotion_engine",
+        "decision_ledger",
+        "paper_portfolio",
+        "tracking_service",
+        "pnl_engine",
+    }
+    assert not forbidden & set(vars(unified))
+    assert not forbidden & set(vars(traditional))
+
+
+@pytest.mark.unit
+def test_baseline_snapshot_must_be_portfolio_eligible():
+    with pytest.raises(UnifiedCandidateError, match="portfolio_eligible"):
+        _snapshot(system=SelectionSystem.TRADITIONAL, eligible=False)
+
+
+# ---------------------------------------------------------------------------
+# BR-1 / BR-4: real snapshot creation/binding at the binding boundary, and
+# mechanically scoped portfolio-context semantics (CUR-003, T14/T15).
+# ---------------------------------------------------------------------------
+
+
+def _snapshot_ready_result():
+    """A selected TraditionalScanResult carrying one fact and one claim so the
+    snapshot integration test exercises non-empty reference forwarding."""
+    result = _traditional_result(selected=True)
+    fact = SharedFact(
+        fact_id="fact:traditional:ACME:financial_reality",
+        fact_type="canonical_metric_observation",
+        fact="issuer-reported financial_reality for FY2025 (ratio)",
+        source_refs=("issuer:filing:1",),
+        data_as_of="2026-08-08",
+        provenance="traditional_e04_compiler",
+    )
+    claim = SystemEvidenceClaim(
+        claim_id="claim:traditional:ACME:G1_FINANCIAL_REALITY_CRITICAL_ACCOUNTING",
+        system_scope=SelectionSystem.TRADITIONAL,
+        claim_type="gate_conclusion",
+        fact_refs=(fact.fact_id,),
+        claim="G1_FINANCIAL_REALITY_CRITICAL_ACCOUNTING PASS",
+        confidence="high",
+        methodology_rule_refs=("frozen-rule-v1",),
+        data_as_of=None,
+        provenance="traditional_e04_compiler",
+    )
+    return replace(result, shared_facts=(fact,), system_evidence_claims=(claim,))
+
+
+@pytest.mark.unit
+def test_build_traditional_snapshot_binds_facts_claims_and_selection():
+    result = _snapshot_ready_result()
+    selection = bind_traditional_selection(result, _traditional_binding())
+    assert selection is not None
+    ref = SelectionRecordRef("traditional:ACME:1", SelectionSystem.TRADITIONAL, "ticker:ACME")
+
+    snapshot = build_traditional_snapshot(result, selection, ref)
+
+    assert snapshot.system_scope is SelectionSystem.TRADITIONAL
+    assert snapshot.selection_record_ref == ref
+    assert snapshot.methodology_version == selection.producer_version
+    assert snapshot.candidate_ref == "ticker:ACME"
+    assert snapshot.shared_fact_refs == ("fact:traditional:ACME:financial_reality",)
+    assert snapshot.system_evidence_claim_refs == (
+        "claim:traditional:ACME:G1_FINANCIAL_REALITY_CRITICAL_ACCOUNTING",
+    )
+    assert snapshot.portfolio_eligible is True
+    assert len(snapshot.payload_hash) == 64  # sha256 hex
+
+    # A decision event binds to this snapshot (system + id match).
+    decision = _decision(system=SelectionSystem.TRADITIONAL, snapshot_id=snapshot.snapshot_id)
+    decision.require_matches_snapshot(snapshot)
+
+
+@pytest.mark.unit
+def test_build_traditional_snapshot_rejects_foreign_selection():
+    result = _snapshot_ready_result()
+    selection = bind_traditional_selection(result, _traditional_binding())
+    assert selection is not None
+    foreign_ref = SelectionRecordRef("traditional:ACME:1", SelectionSystem.PRADEEP, "ticker:ACME")
+    with pytest.raises(UnifiedCandidateError, match="baseline selection origin"):
+        build_traditional_snapshot(result, selection, foreign_ref)
+
+
+@pytest.mark.unit
+def test_snapshot_rejects_foreign_claim_at_consumption_boundary():
+    """The snapshot consumes the compiler's claims at a real boundary and fails
+    closed on a foreign system_scope (T01 / CUR-008)."""
+    result = _snapshot_ready_result()
+    foreign_claim = SystemEvidenceClaim(
+        claim_id="claim:foreign:1",
+        system_scope=SelectionSystem.PRADEEP,
+        claim_type="gate_conclusion",
+        fact_refs=(),
+        claim="foreign claim",
+        confidence="high",
+        methodology_rule_refs=(),
+        data_as_of=None,
+        provenance="pradeep",
+    )
+    result = replace(result, system_evidence_claims=(foreign_claim,))
+    selection = bind_traditional_selection(result, _traditional_binding())
+    assert selection is not None
+    ref = SelectionRecordRef("traditional:ACME:1", SelectionSystem.TRADITIONAL, "ticker:ACME")
+    with pytest.raises(UnifiedCandidateError, match="CROSS_SYSTEM_CONTAMINATION"):
+        build_traditional_snapshot(result, selection, ref)
+
+
+@pytest.mark.unit
+def test_t14_t15_portfolio_context_scope_is_mechanical():
+    ctx = SystemPortfolioContext("ctx:1", SelectionSystem.TRADITIONAL, None)
+    ctx.require_system_scope(SelectionSystem.TRADITIONAL)  # own system: ok
+    with pytest.raises(UnifiedCandidateError, match="CROSS_SYSTEM_CONTAMINATION"):
+        ctx.require_system_scope(SelectionSystem.PRADEEP)
+
+
+@pytest.mark.unit
+def test_decision_event_rejects_foreign_portfolio_context():
+    foreign_ctx = SystemPortfolioContext("ctx:pradeep:1", SelectionSystem.PRADEEP, None)
+    with pytest.raises(UnifiedCandidateError, match="portfolio context"):
+        SystemDecisionEvent(
+            decision_id="decision:2",
+            system_scope=SelectionSystem.TRADITIONAL,
+            unified_candidate_ref="ticker:ACME",
+            selection_record_ref=_trad_ref(),
+            analysis_purpose=AnalysisPurpose.BASELINE_SYSTEM,
+            portfolio_eligible=True,
+            decision_time="2026-08-10T03:00:00+00:00",
+            data_as_of=None,
+            position_state_at_decision="NOT_HELD",
+            action_intent="BUY",
+            methodology_decision_code="E04_G7_BUY",
+            reason_summary="summary",
+            analysis_snapshot_ref="snap:1",
+            analysis_snapshot_hash="abc123",
+            portfolio_context_ref=foreign_ctx,
+        )
+
+
+@pytest.mark.unit
+def test_t14_t15_contract_does_not_require_live_portfolio_runtime():
+    """A baseline decision with no portfolio service/context remains valid;
+    only a supplied foreign context is prohibited by the contract oracle."""
+    decision = SystemDecisionEvent(
+        decision_id="decision:no-portfolio-runtime",
+        system_scope=SelectionSystem.TRADITIONAL,
+        unified_candidate_ref="ticker:ACME",
+        selection_record_ref=_trad_ref(),
+        analysis_purpose=AnalysisPurpose.BASELINE_SYSTEM,
+        portfolio_eligible=True,
+        decision_time="2026-08-10T03:00:00+00:00",
+        data_as_of=None,
+        position_state_at_decision="NOT_HELD",
+        action_intent="REVIEW",
+        methodology_decision_code="E04_REVIEW_REQUIRED",
+        reason_summary="No trusted portfolio context is available.",
+        analysis_snapshot_ref="snap:1",
+        analysis_snapshot_hash="abc123",
+        portfolio_context_ref=None,
+    )
+    assert decision.portfolio_context_ref is None

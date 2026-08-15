@@ -70,6 +70,11 @@ from api.schemas import (
     StartAnalysisRequest,
     StartAnalysisResponse,
 )
+from tradingagents.agents.schemas import (
+    clear_governed_decision_context,
+    set_governed_decision_context,
+)
+from tradingagents.dataflows.symbol_utils import normalize_symbol
 from tradingagents.dataflows.utils import safe_ticker_component
 from tradingagents.default_config import (
     DEFAULT_CONFIG,
@@ -77,6 +82,7 @@ from tradingagents.default_config import (
     set_active_prompt_grounding,
 )
 from tradingagents.graph.trading_graph import TradingAgentsGraph
+from tradingagents.knowledge.stockbee_retrieval import SUPPORTED_PROFILES
 from tradingagents.run_artifact_writer import (
     ArtifactPathError,
     append_run_event,
@@ -98,9 +104,12 @@ from tradingagents.run_contract import (
     derive_overall_status,
 )
 from tradingagents.scanners.unified import (
+    AnalysisPurpose,
+    SelectionRecordRef,
     SelectionSystem,
     UnifiedCandidate,
     UnifiedCandidateError,
+    derive_analysis_governance,
     validate_unified_candidate,
 )
 from tradingagents.streaming_analysis_runner import StreamingDeepSeekAnalysisRunner
@@ -278,6 +287,132 @@ def get_report(
     return PlainTextResponse(path.read_text(encoding="utf-8"), media_type="text/markdown")
 
 
+def _strategy_profile_is_stockbee(strategy_profile: str | None) -> bool:
+    """Return True when the profile is a known frozen Stockbee KB profile.
+
+    KB-independent: checks membership in the frozen ``SUPPORTED_PROFILES``
+    registry so a foreign grounding combination can be rejected for a
+    Traditional baseline without any frozen-KB I/O.
+    """
+    return strategy_profile is not None and strategy_profile in SUPPORTED_PROFILES
+
+
+def _verify_baseline_selection_authority(
+    selection_ref: SelectionRecordRef, request_ticker: str
+) -> None:
+    """Reject a fabricated-but-shape-valid or foreign baseline origin (BR-3/B-08).
+
+    A BASELINE_SYSTEM ``selection_record_ref`` must correspond to an actual
+    E02 selection already present in the process-local scanner-candidate feed
+    (``_CANDIDATE_FEED``), with matching selection id, selection system, and
+    company identity. SR-4: the authoritative candidate's ticker/company
+    identity must equal the analyzed request ticker after the repository's
+    canonical normalization, so a real AAPL selection can never authorize an
+    MSFT baseline analysis.
+    """
+    if selection_ref.company_id is None:
+        raise HTTPException(
+            status_code=422,
+            detail="baseline selection origin is missing company_id",
+        )
+    with _CANDIDATE_FEED_LOCK:
+        candidate = _CANDIDATE_FEED.get(selection_ref.company_id)
+    if candidate is None:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "baseline selection origin not found in the current E02 "
+                "candidate authority"
+            ),
+        )
+    for selection in candidate.selections:
+        if (
+            selection.selection_id == selection_ref.selection_id
+            and selection.selection_system is selection_ref.selection_system
+        ):
+            # SR-4: bind the analyzed request ticker to the authoritative
+            # candidate identity, after canonical ticker normalization.
+            if candidate.ticker is None:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        "baseline selection candidate has no public ticker "
+                        "identity; cannot authorize a ticker-based analysis"
+                    ),
+                )
+            if normalize_symbol(candidate.ticker) != normalize_symbol(request_ticker):
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"baseline selection origin {candidate.ticker!r} cannot "
+                        f"authorize analysis of {request_ticker!r}"
+                    ),
+                )
+            return
+    raise HTTPException(
+        status_code=422,
+        detail=(
+            "baseline selection origin does not match any selection in the "
+            "current E02 candidate authority"
+        ),
+    )
+
+
+def _resolve_analysis_governance(request: StartAnalysisRequest):
+    """Resolve selection origin -> purpose + portfolio eligibility, fail closed.
+
+    Raises ``HTTPException(422)`` on any ambiguous or foreign origin so the
+    synchronous POST returns a clear rejection before any run artifact is
+    written.
+    """
+    selection_ref = None
+    if request.selection_record_ref is not None:
+        try:
+            selection_ref = SelectionRecordRef.from_mapping(request.selection_record_ref)
+        except UnifiedCandidateError as exc:
+            raise HTTPException(
+                status_code=422, detail=f"invalid selection_record_ref: {exc}"
+            ) from exc
+    try:
+        return derive_analysis_governance(
+            request.system_scope, selection_ref, request.analysis_purpose
+        )
+    except UnifiedCandidateError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+def _validate_governed_request(request: StartAnalysisRequest):
+    """Synchronous fail-closed checks for a governed analysis request."""
+    governance = _resolve_analysis_governance(request)
+    if governance.analysis_purpose is AnalysisPurpose.BASELINE_SYSTEM:
+        # BR-3 / B-08: a baseline selection origin must be a real E02
+        # selection already in the process-local candidate authority, not
+        # merely a shape-valid client assertion.
+        if request.selection_record_ref is None:
+            raise HTTPException(
+                status_code=422, detail="baseline selection origin is missing"
+            )
+        selection_ref = SelectionRecordRef.from_mapping(request.selection_record_ref)
+        _verify_baseline_selection_authority(selection_ref, request.ticker)
+    if governance.system_scope is SelectionSystem.TECHNOLOGY:
+        raise HTTPException(
+            status_code=422,
+            detail="Technology analysis is not connected; reserved for E10.",
+        )
+    if (
+        governance.system_scope is SelectionSystem.TRADITIONAL
+        and _strategy_profile_is_stockbee(request.strategy_profile)
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Traditional baseline analysis must never receive Stockbee "
+                "methodology grounding."
+            ),
+        )
+    return governance
+
+
 def _build_graph(request: StartAnalysisRequest) -> TradingAgentsGraph:
     """Construct the real graph for a live run. The one seam tests replace
     wholesale (via ``monkeypatch.setattr("api.main._build_graph", ...)``) so
@@ -288,13 +423,27 @@ def _build_graph(request: StartAnalysisRequest) -> TradingAgentsGraph:
     if request.deep_model:
         config["deep_think_llm"] = request.deep_model
 
-    # Phase 10B.1: Stockbee prompt grounding. Feature-gated — only
-    # activates when strategy_profile is an explicitly known Stockbee
-    # profile. Unknown profiles and None → no grounding.
-    # Reset on every call so stale grounding from a previous profile
-    # never leaks into the default path.
+    # G5: resolve selection origin -> purpose/portfolio eligibility, then
+    # thread the governed system_scope into config. The memory log (and any
+    # downstream governed snapshot/decision object) reads this scope; a
+    # Traditional baseline therefore uses a Traditional memory namespace and
+    # never receives foreign grounding. Fails closed on ambiguity.
+    governance = _resolve_analysis_governance(request)
+    config["system_scope"] = (
+        governance.system_scope.value if governance.system_scope else None
+    )
+    config["analysis_purpose"] = governance.analysis_purpose.value
+    config["portfolio_eligible"] = governance.portfolio_eligible
+
+    # Phase 10B.1: Stockbee prompt grounding, now gated by system_scope.
+    # A Traditional baseline run must never receive Stockbee grounding; a
+    # Pradeep-scoped (or legacy unscoped manual) run may. Reset on every call
+    # so stale grounding from a previous profile never leaks.
     set_active_prompt_grounding(None)
-    if request.strategy_profile:
+    if (
+        request.strategy_profile
+        and governance.system_scope is not SelectionSystem.TRADITIONAL
+    ):
         grounding = get_stockbee_grounding(request.strategy_profile)
         if grounding:
             config["prompt_grounding"] = grounding
@@ -312,14 +461,25 @@ def _execute_analysis_job(run_id: str, request: StartAnalysisRequest, runs_dir: 
     try:
         graph = _build_graph(request)
         runner = StreamingDeepSeekAnalysisRunner(graph, runs_dir=runs_dir)
-        runner.run(
-            request.ticker,
-            request.analysis_date,
-            asset_type=request.asset_type,
-            run_id=run_id,
-            allow_existing_queued_run=True,
-            strategy_profile=request.strategy_profile,
+        governance = _resolve_analysis_governance(request)
+        context_token = set_governed_decision_context(
+            analysis_purpose=governance.analysis_purpose.value,
+            system_scope=(
+                governance.system_scope.value if governance.system_scope else None
+            ),
+            portfolio_eligible=governance.portfolio_eligible,
         )
+        try:
+            runner.run(
+                request.ticker,
+                request.analysis_date,
+                asset_type=request.asset_type,
+                run_id=run_id,
+                allow_existing_queued_run=True,
+                strategy_profile=request.strategy_profile,
+            )
+        finally:
+            clear_governed_decision_context(context_token)
     except Exception:
         logger.exception("background analysis job %r failed", run_id)
     finally:
@@ -335,6 +495,10 @@ def start_analysis(
     clock: Callable[[], datetime] = Depends(get_clock),
 ) -> StartAnalysisResponse:
     global _ACTIVE_RUN_ID
+    # G5: fail closed synchronously on ambiguous/foreign origin and on a
+    # Traditional baseline that would receive Stockbee grounding — before any
+    # run directory or event is written.
+    _validate_governed_request(request)
     created_at = clock()
     run_id = f"{safe_ticker_component(request.ticker)}_{created_at:%Y%m%d_%H%M%S}"
     run_dir = runs_dir / run_id
@@ -400,6 +564,28 @@ def start_analysis(
     )
 
 
+def _store_candidate(candidate: UnifiedCandidate) -> UnifiedCandidate:
+    """Merge ``candidate`` into the process-local feed, preserving independent
+    per-system selections, and return the merged candidate."""
+    with _CANDIDATE_FEED_LOCK:
+        existing = _CANDIDATE_FEED.get(candidate.company_id)
+        if existing is None:
+            merged = candidate
+        else:
+            try:
+                merged = UnifiedCandidate(
+                    company_id=candidate.company_id,
+                    identity_status=candidate.identity_status,
+                    ticker=candidate.ticker,
+                    selections=existing.selections + candidate.selections,
+                    display_name=candidate.display_name or existing.display_name,
+                )
+            except UnifiedCandidateError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+        _CANDIDATE_FEED[candidate.company_id] = merged
+    return merged
+
+
 # E09: process-local scanner-candidate feed. A transient, in-memory-only
 # store for already-assembled E02 UnifiedCandidate envelopes (produced
 # externally by Traditional/Pradeep scanner runs) -- no database, no
@@ -414,9 +600,9 @@ _CANDIDATE_FEED: dict[str, UnifiedCandidate] = {}
 
 @app.post("/api/scanner-candidates", status_code=201)
 def ingest_scanner_candidate(payload: dict) -> dict:
-    """Accept one E02 UnifiedCandidate envelope, fail closed on any
-    contract violation. Technology is reserved for E10: an envelope
-    containing an actual TECHNOLOGY selection is rejected outright."""
+    """Accept one E02 UnifiedCandidate envelope and fail closed on any contract
+    violation. Technology is reserved for E10: an envelope containing an
+    actual TECHNOLOGY selection is rejected outright."""
     try:
         candidate = validate_unified_candidate(payload)
     except UnifiedCandidateError as exc:
@@ -431,26 +617,7 @@ def ingest_scanner_candidate(payload: dict) -> dict:
             detail="Technology selections are not connected in E09; reserved for E10.",
         )
 
-    with _CANDIDATE_FEED_LOCK:
-        existing = _CANDIDATE_FEED.get(candidate.company_id)
-        if existing is None:
-            merged = candidate
-        else:
-            # Preserve every prior independent selection alongside the new
-            # one -- never collapse multiple system matches into one, and
-            # never compute a cross-system score from them.
-            try:
-                merged = UnifiedCandidate(
-                    company_id=candidate.company_id,
-                    identity_status=candidate.identity_status,
-                    ticker=candidate.ticker,
-                    selections=existing.selections + candidate.selections,
-                    display_name=candidate.display_name or existing.display_name,
-                )
-            except UnifiedCandidateError as exc:
-                raise HTTPException(status_code=409, detail=str(exc)) from exc
-        _CANDIDATE_FEED[candidate.company_id] = merged
-    return merged.to_dict()
+    return _store_candidate(candidate).to_dict()
 
 
 @app.get("/api/scanner-candidates")
