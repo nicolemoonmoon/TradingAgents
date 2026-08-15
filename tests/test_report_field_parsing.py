@@ -8,7 +8,14 @@ from pathlib import Path
 
 import pytest
 
-from tradingagents.agents.schemas import PortfolioRating, TraderAction
+from tradingagents.agents.schemas import (
+    EntryDecision,
+    ExecutionAvailability,
+    ExitReason,
+    PortfolioRating,
+    PositionDecision,
+    TraderAction,
+)
 from tradingagents.report_field_parsing import (
     AGENT_REPORT_FILE_MAP,
     AgentId,
@@ -143,3 +150,51 @@ def test_extract_report_tree_fields_empty_run_dir_yields_all_not_selected(tmp_pa
 @pytest.mark.unit
 def test_agent_report_file_map_covers_all_twelve_agents():
     assert set(AGENT_REPORT_FILE_MAP.values()) == set(AgentId)
+
+
+@pytest.mark.unit
+def test_extract_report_tree_fields_reads_governed_entry_and_position_fields(tmp_path):
+    run_dir = _copy_fixture(tmp_path)
+    (run_dir / "3_trading" / "trader.md").write_text(
+        "**Action**: Buy\n\n"
+        "**Entry Decision**: WAIT\n\n"
+        "**Execution Availability**: AVAILABLE\n\n"
+        "**Why Wait**: extended above the entry zone\n\n"
+        "**What Needs To Change**: pull back to support\n\n"
+        "**Recheck Trigger**: daily close below 20 SMA\n\n"
+        "**Review Due**: 2026-08-20\n\n"
+        "FINAL TRANSACTION PROPOSAL: **BUY**",
+        encoding="utf-8",
+    )
+    (run_dir / "5_portfolio" / "decision.md").write_text(
+        "**Rating**: Hold\n\n"
+        "**Position Decision**: SELL\n\n"
+        "**Exit Reason**: THESIS_BROKEN",
+        encoding="utf-8",
+    )
+
+    fields = extract_report_tree_fields(run_dir)
+
+    assert fields.entry_decision == EntryDecision.WAIT
+    assert fields.execution_availability == ExecutionAvailability.AVAILABLE
+    assert fields.why_wait == "extended above the entry zone"
+    assert fields.what_needs_to_change == "pull back to support"
+    assert fields.recheck_trigger == "daily close below 20 SMA"
+    assert fields.review_due == "2026-08-20"
+    assert fields.position_decision == PositionDecision.SELL
+    assert fields.exit_reason == ExitReason.THESIS_BROKEN
+
+
+@pytest.mark.unit
+def test_extract_report_tree_fields_governed_fields_absent_stay_none(tmp_path):
+    run_dir = _copy_fixture(tmp_path)
+    fields = extract_report_tree_fields(run_dir)
+
+    assert fields.entry_decision is None
+    assert fields.execution_availability is None
+    assert fields.why_wait is None
+    assert fields.what_needs_to_change is None
+    assert fields.recheck_trigger is None
+    assert fields.review_due is None
+    assert fields.position_decision is None
+    assert fields.exit_reason is None

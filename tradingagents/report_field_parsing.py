@@ -23,7 +23,14 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from tradingagents.agents.schemas import PortfolioRating, TraderAction
+from tradingagents.agents.schemas import (
+    EntryDecision,
+    ExecutionAvailability,
+    ExitReason,
+    PortfolioRating,
+    PositionDecision,
+    TraderAction,
+)
 from tradingagents.agents.utils.rating import parse_rating
 from tradingagents.run_contract import AgentId, AgentStatus
 
@@ -66,6 +73,17 @@ class ReportTreeFields:
     time_horizon: str | None
     agent_statuses: dict[AgentId, AgentStatus] = field(default_factory=dict)
     data_quality_flags: list[str] = field(default_factory=list)
+    # Governed report fields (additive): recovered from the same rendered
+    # markdown via the existing ``**Field**: value`` convention. ``None`` when
+    # absent, matching the plain-string / enum fields above.
+    entry_decision: EntryDecision | None = None
+    why_wait: str | None = None
+    what_needs_to_change: str | None = None
+    recheck_trigger: str | None = None
+    review_due: str | None = None
+    execution_availability: ExecutionAvailability | None = None
+    position_decision: PositionDecision | None = None
+    exit_reason: ExitReason | None = None
 
 
 def extract_report_tree_fields(run_dir: Path | str) -> ReportTreeFields:
@@ -154,6 +172,54 @@ def extract_report_tree_fields(run_dir: Path | str) -> ReportTreeFields:
 
     time_horizon = extract_bold_field(decision_text, "Time Horizon") if decision_text else None
 
+    # Governed entry semantics (rendered by render_trader_proposal) live in
+    # trader.md; governed position semantics (render_pm_decision) live in
+    # decision.md. Recovered with the same bold-field convention, converted to
+    # their frozen enums when the value is legal, and flagged -- never guessed
+    # -- when a value is present but unparseable.
+    entry_decision: EntryDecision | None = None
+    if trader_text is not None:
+        raw = extract_bold_field(trader_text, "Entry Decision")
+        if raw is not None:
+            try:
+                entry_decision = EntryDecision(raw)
+            except ValueError:
+                flags.append("legacy_import:unparseable_entry_decision")
+
+    execution_availability: ExecutionAvailability | None = None
+    if trader_text is not None:
+        raw = extract_bold_field(trader_text, "Execution Availability")
+        if raw is not None:
+            try:
+                execution_availability = ExecutionAvailability(raw)
+            except ValueError:
+                flags.append("legacy_import:unparseable_execution_availability")
+
+    why_wait = extract_bold_field(trader_text, "Why Wait") if trader_text else None
+    what_needs_to_change = (
+        extract_bold_field(trader_text, "What Needs To Change") if trader_text else None
+    )
+    recheck_trigger = extract_bold_field(trader_text, "Recheck Trigger") if trader_text else None
+    review_due = extract_bold_field(trader_text, "Review Due") if trader_text else None
+
+    position_decision: PositionDecision | None = None
+    if decision_text is not None:
+        raw = extract_bold_field(decision_text, "Position Decision")
+        if raw is not None:
+            try:
+                position_decision = PositionDecision(raw)
+            except ValueError:
+                flags.append("legacy_import:unparseable_position_decision")
+
+    exit_reason: ExitReason | None = None
+    if decision_text is not None:
+        raw = extract_bold_field(decision_text, "Exit Reason")
+        if raw is not None:
+            try:
+                exit_reason = ExitReason(raw)
+            except ValueError:
+                flags.append("legacy_import:unparseable_exit_reason")
+
     return ReportTreeFields(
         draft_rating=draft_rating,
         trader_action=trader_action,
@@ -163,4 +229,12 @@ def extract_report_tree_fields(run_dir: Path | str) -> ReportTreeFields:
         time_horizon=time_horizon,
         agent_statuses=agent_statuses,
         data_quality_flags=flags,
+        entry_decision=entry_decision,
+        why_wait=why_wait,
+        what_needs_to_change=what_needs_to_change,
+        recheck_trigger=recheck_trigger,
+        review_due=review_due,
+        execution_availability=execution_availability,
+        position_decision=position_decision,
+        exit_reason=exit_reason,
     )

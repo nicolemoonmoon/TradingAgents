@@ -641,3 +641,91 @@ def test_app_js_formats_identity_from_ticker_display_name_or_company_id(client):
     assert "function formatIdentity(candidate)" in body
     assert "formatIdentity(candidate)" in body
     assert body.count("formatIdentity(candidate)") >= 3
+
+
+# ---------------------------------------------------------------------------
+# E11 (UI calibration): collapsed run settings, workbench navigation classes,
+# visible focus, distinct connection states, and structured Final Decision
+# hooks. Static source-level assertions only.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_run_settings_are_collapsed_by_default(client):
+    body = client.get("/").text
+    settings_section = _extract_section_html(body, "shared-run-settings")
+
+    assert '<details class="run-settings-disclosure">' in settings_section
+    # Default collapsed: the disclosure carries no `open` attribute.
+    assert "<details open" not in settings_section
+    # The settings inputs still live inside the (collapsible) shared section.
+    for expected_id in (
+        "analysis-date-input",
+        "quick-model-input",
+        "deep-model-input",
+        "strategy-profile-input",
+    ):
+        assert f'id="{expected_id}"' in settings_section
+
+
+@pytest.mark.unit
+def test_mode_switch_has_workbench_navigation_classes(client):
+    body = client.get("/").text
+    mode_switch = _extract_section_html(body, "mode-switch")
+
+    assert 'class="mode-nav"' in mode_switch
+    assert mode_switch.count('class="mode-nav-item"') == 5
+
+
+@pytest.mark.unit
+def test_style_css_has_focus_visible_rules(client):
+    body = client.get("/style.css").text
+    assert ":focus-visible" in body
+
+
+@pytest.mark.unit
+def test_style_css_has_distinct_connection_state_styles(client):
+    body = client.get("/style.css").text
+    assert ".connection-status.status-not-connected" in body
+    assert ".connection-status.status-partial" in body
+    assert ".connection-status.status-reserved" in body
+
+
+@pytest.mark.unit
+def test_index_html_has_structured_final_decision_hooks(client):
+    body = client.get("/").text
+    for hook_id in (
+        "entry-decision-group",
+        "entry-decision-label",
+        "execution-availability-label",
+        "wait-rationale",
+        "why-wait-label",
+        "what-needs-to-change-label",
+        "recheck-trigger-label",
+        "review-due-label",
+        "position-decision-group",
+        "position-decision-label",
+        "exit-reason-label",
+    ):
+        assert f'id="{hook_id}"' in body
+
+
+@pytest.mark.unit
+def test_app_js_renders_governed_entry_and_position_groups(client):
+    body = client.get("/app.js").text
+    assert "entryDecisionGroup" in body
+    assert "positionDecisionGroup" in body
+    assert "manifest.entry_decision" in body
+    assert "manifest.position_decision" in body
+    assert "manifest.why_wait" in body
+    assert "manifest.exit_reason" in body
+
+
+@pytest.mark.unit
+def test_app_js_governed_disclosure_never_introduces_combined_score(client):
+    body = client.get("/app.js").text
+    assert "function formatStructuralDisruption" in body
+    assert "function formatCounterThesis" in body
+    assert "combinedScore" not in body
+    assert "combined_score" not in body
+    assert "crossSystemScore" not in body

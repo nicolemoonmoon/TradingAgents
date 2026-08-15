@@ -18,9 +18,11 @@ from typing import Any
 from tradingagents.dataflows.canonical_data import Availability, CanonicalData
 from tradingagents.scanners.pradeep import PradeepEvidenceRef, PradeepScanResult
 from tradingagents.scanners.traditional import (
+    CounterThesis,
     Gate,
     GateStatus,
     ScanRequest,
+    StructuralDisruptionAssessment,
     TraditionalScanResult,
     compile_traditional_scan,
 )
@@ -196,6 +198,14 @@ class UnifiedSelection:
     detected_at: str
     data_as_of: str
     system_rank: SystemRank | None
+    # Optional Traditional-only payloads (already-computed, additive transport):
+    # the six-question Structural Disruption assessment and the AI
+    # Counter-Thesis. Serialized as plain JSON-compatible mappings via
+    # _serialize_structural_disruption / _serialize_counter_thesis; never
+    # populated for non-Traditional systems, never merged across systems, and
+    # never turned into a score.
+    structural_disruption: dict[str, object] | None = None
+    counter_thesis: dict[str, object] | None = None
 
     def __post_init__(self) -> None:
         _string(self.selection_id, "selection_id", minimum=1, maximum=160)
@@ -234,6 +244,18 @@ class UnifiedSelection:
             raise UnifiedCandidateError("evidence_id values must be unique per selection")
         if self.system_rank is not None and not isinstance(self.system_rank, SystemRank):
             raise UnifiedCandidateError("system_rank must be SystemRank or null")
+        if self.structural_disruption is not None and not isinstance(
+            self.structural_disruption, dict
+        ):
+            raise UnifiedCandidateError("structural_disruption must be an object or null")
+        if self.counter_thesis is not None and not isinstance(self.counter_thesis, dict):
+            raise UnifiedCandidateError("counter_thesis must be an object or null")
+        if (
+            self.structural_disruption is not None or self.counter_thesis is not None
+        ) and self.selection_system is not SelectionSystem.TRADITIONAL:
+            raise UnifiedCandidateError(
+                "structural_disruption and counter_thesis are Traditional-only payloads"
+            )
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, object]) -> UnifiedSelection:
@@ -253,7 +275,12 @@ class UnifiedSelection:
                 "system_rank",
             }
         )
-        _exact_keys(value, "selection", required)
+        _exact_keys(
+            value,
+            "selection",
+            required,
+            frozenset({"structural_disruption", "counter_thesis"}),
+        )
         rank_value = value["system_rank"]
         if rank_value is None:
             rank = None
@@ -289,10 +316,14 @@ class UnifiedSelection:
             detected_at=value["detected_at"],  # type: ignore[arg-type]
             data_as_of=value["data_as_of"],  # type: ignore[arg-type]
             system_rank=rank,
+            structural_disruption=_optional_payload(
+                value.get("structural_disruption"), "structural_disruption"
+            ),
+            counter_thesis=_optional_payload(value.get("counter_thesis"), "counter_thesis"),
         )
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        result: dict[str, object] = {
             "selection_id": self.selection_id,
             "selection_system": self.selection_system.value,
             "producer_version": self.producer_version,
@@ -306,10 +337,32 @@ class UnifiedSelection:
             "data_as_of": self.data_as_of,
             "system_rank": None if self.system_rank is None else self.system_rank.to_dict(),
         }
+        # Optional Traditional-only payloads are emitted only when present, so
+        # selections without them serialize byte-identically to their
+        # pre-transport shape (old manifests / envelopes unchanged).
+        if self.structural_disruption is not None:
+            result["structural_disruption"] = self.structural_disruption
+        if self.counter_thesis is not None:
+            result["counter_thesis"] = self.counter_thesis
+        return result
 
 
 def _raise_mapping(field_name: str) -> Any:
     raise UnifiedCandidateError(f"{field_name} must be an object")
+
+
+def _optional_payload(value: object, field_name: str) -> dict[str, object] | None:
+    """Return an optional payload mapping as a plain dict, or ``None``.
+
+    ``structural_disruption`` and ``counter_thesis`` are already-computed,
+    JSON-compatible payloads; this only checks the container shape (object or
+    null) and never re-derives or validates the payload's internal semantics.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise UnifiedCandidateError(f"{field_name} must be an object or null")
+    return dict(value)
 
 
 @dataclass(frozen=True, slots=True)
@@ -519,11 +572,88 @@ def _bind_traditional_evidence(
     )
 
 
+def _serialize_structural_disruption(
+    assessment: StructuralDisruptionAssessment,
+) -> dict[str, object]:
+    """Serialize the frozen six-question Structural Disruption assessment.
+
+    Plain, auditable JSON mirroring the dataclass fields only -- no score, no
+    pass/fail coloring, and no reinterpretation of the already-computed
+    findings.
+    """
+    return {
+        "method_version": assessment.method_version,
+        "questions": [
+            {
+                "question": question.value,
+                "conclusion": finding.conclusion,
+                "evidence": list(finding.evidence),
+                "counter_evidence": list(finding.counter_evidence),
+                "economic_transmission": finding.economic_transmission,
+                "incumbent_adaptation": finding.incumbent_adaptation,
+                "expected_horizon": finding.expected_horizon,
+                "falsification_condition": finding.falsification_condition,
+                "confidence": finding.confidence,
+                "major_unknowns": list(finding.major_unknowns),
+                "methodology_rule_refs": list(finding.methodology_rule_refs),
+            }
+            for question, finding in sorted(
+                assessment.questions.items(), key=lambda item: item[0].value
+            )
+        ],
+    }
+
+
+def _serialize_counter_thesis(counter: CounterThesis) -> dict[str, object]:
+    """Serialize the already-computed AI Counter-Thesis as auditable prose.
+
+    Major judgments carry their finding, confidence level, and machine-state
+    contradiction, plus evidence provenance (never the raw canonical payload).
+    No score is derived or emitted.
+    """
+    return {
+        "competitive_advantage_erosion": counter.competitive_advantage_erosion,
+        "new_entrant_or_technology_substitution": (
+            counter.new_entrant_or_technology_substitution
+        ),
+        "accounting_anomaly": counter.accounting_anomaly,
+        "management_narrative_conflict": counter.management_narrative_conflict,
+        "customer_supplier_concentration": counter.customer_supplier_concentration,
+        "regulatory_geopolitical_risk": counter.regulatory_geopolitical_risk,
+        "valuation_assumptions": counter.valuation_assumptions,
+        "bull_thesis": counter.bull_thesis,
+        "bear_thesis": counter.bear_thesis,
+        "disconfirming_evidence": counter.disconfirming_evidence,
+        "thesis_break_conditions": counter.thesis_break_conditions,
+        "major_judgments": [
+            {
+                "judgment_id": judgment.judgment_id,
+                "finding": judgment.finding,
+                "confidence_level": judgment.confidence_level,
+                "contradiction": {
+                    "present": judgment.contradiction.present,
+                    "resolved": judgment.contradiction.resolved,
+                    "description": judgment.contradiction.description,
+                },
+                "evidence": [_canonical_source_ref(data) for data in judgment.evidence],
+            }
+            for judgment in counter.major_judgments
+        ],
+    }
+
+
 def bind_traditional_selection(
     result: TraditionalScanResult,
     binding: TraditionalSelectionBinding,
+    *,
+    counter_thesis: CounterThesis | None = None,
 ) -> UnifiedSelection | None:
-    """Bind only a frozen Traditional result with an actual G7 candidate tier."""
+    """Bind only a frozen Traditional result with an actual G7 candidate tier.
+
+    ``counter_thesis`` is the already-computed AI Counter-Thesis from the scan
+    request (caller-owned input, never re-derived here); when supplied it is
+    transported verbatim onto the selection for auditable UI disclosure.
+    """
 
     if not isinstance(result, TraditionalScanResult):
         raise UnifiedCandidateError("result must be TraditionalScanResult")
@@ -568,6 +698,12 @@ def bind_traditional_selection(
         detected_at=binding.detected_at,
         data_as_of=binding.data_as_of,
         system_rank=None,
+        structural_disruption=_serialize_structural_disruption(
+            result.structural_disruption
+        ),
+        counter_thesis=(
+            None if counter_thesis is None else _serialize_counter_thesis(counter_thesis)
+        ),
     )
 
 
@@ -1186,7 +1322,11 @@ def compile_traditional_candidate(
     builder, and E02 assembly rather than a second candidate schema or runtime.
     """
     result = compile_traditional_scan(request)
-    selection = bind_traditional_selection(result, binding)
+    selection = bind_traditional_selection(
+        result,
+        binding,
+        counter_thesis=request.ai_research.counter_thesis,
+    )
     if selection is None:
         raise UnifiedCandidateError(
             "Traditional compiler produced no actual G7 candidate selection; "

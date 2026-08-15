@@ -20,68 +20,71 @@
 
   <main>
     <section id="shared-run-settings">
-      <h2>Run settings</h2>
-      <p id="shared-run-settings-scope-hint" class="cost-hint">
-        These settings are used only when you start a real analysis. Discovery,
-        Compare Board, and Results do not use them.
-      </p>
-      <div class="field">
-        <label for="analysis-date-input">Analysis date</label>
-        <input type="date" id="analysis-date-input" />
-      </div>
-      <fieldset class="field">
-        <legend>Analysts</legend>
-        <label><input type="checkbox" class="analyst-checkbox" value="market" checked /> market</label>
-        <label><input type="checkbox" class="analyst-checkbox" value="social" /> social</label>
-        <label><input type="checkbox" class="analyst-checkbox" value="news" /> news</label>
-        <label><input type="checkbox" class="analyst-checkbox" value="fundamentals" /> fundamentals</label>
-        <p class="cost-hint" id="analysts-cost-hint">
-          Default (market only) is the low-cost option. Selecting more
-          analysts increases both cost and run time.
+      <details class="run-settings-disclosure">
+        <summary>Run settings</summary>
+        <p id="shared-run-settings-scope-hint" class="cost-hint">
+          These settings are used only when you start a real analysis. Discovery,
+          Compare Board, and Results do not use them.
         </p>
-      </fieldset>
-      <div class="field">
-        <label for="quick-model-input">Quick model</label>
-        <input type="text" id="quick-model-input" value="deepseek-v4-flash" />
-      </div>
-      <div class="field">
-        <label for="deep-model-input">Deep model</label>
-        <input type="text" id="deep-model-input" value="deepseek-v4-flash" />
-      </div>
-      <div class="field">
-        <label for="strategy-profile-input">Strategy profile</label>
-        <select id="strategy-profile-input">
-          <option value="">None / Manual analysis</option>
-          <option value="stockbee_momentum_burst">Stockbee — Momentum Burst</option>
-          <option value="stockbee_episodic_pivot">Stockbee — Episodic Pivot</option>
-        </select>
-      </div>
+        <div class="field">
+          <label for="analysis-date-input">Analysis date</label>
+          <input type="date" id="analysis-date-input" />
+        </div>
+        <fieldset class="field">
+          <legend>Analysts</legend>
+          <label><input type="checkbox" class="analyst-checkbox" value="market" checked /> market</label>
+          <label><input type="checkbox" class="analyst-checkbox" value="social" /> social</label>
+          <label><input type="checkbox" class="analyst-checkbox" value="news" /> news</label>
+          <label><input type="checkbox" class="analyst-checkbox" value="fundamentals" /> fundamentals</label>
+          <p class="cost-hint" id="analysts-cost-hint">
+            Default (market only) is the low-cost option. Selecting more
+            analysts increases both cost and run time.
+          </p>
+        </fieldset>
+        <div class="field">
+          <label for="quick-model-input">Quick model</label>
+          <input type="text" id="quick-model-input" value="deepseek-v4-flash" />
+        </div>
+        <div class="field">
+          <label for="deep-model-input">Deep model</label>
+          <input type="text" id="deep-model-input" value="deepseek-v4-flash" />
+        </div>
+        <div class="field">
+          <label for="strategy-profile-input">Strategy profile</label>
+          <select id="strategy-profile-input">
+            <option value="">None / Manual analysis</option>
+            <option value="stockbee_momentum_burst">Stockbee — Momentum Burst</option>
+            <option value="stockbee_episodic_pivot">Stockbee — Episodic Pivot</option>
+          </select>
+        </div>
+      </details>
     </section>
 
-    <section id="mode-switch">
-      <label>
+    <section id="mode-switch" class="mode-nav" aria-label="Workbench navigation">
+      <label class="mode-nav-item">
         <input type="radio" name="mode" id="mode-scanner" value="scanner" checked />
         Discovery
       </label>
-      <label>
+      <label class="mode-nav-item">
         <input type="radio" name="mode" id="mode-candidates" value="candidates" />
         Unified Candidate Board
       </label>
-      <label>
+      <label class="mode-nav-item">
         <input type="radio" name="mode" id="mode-compare" value="compare" />
         Compare Board
       </label>
-      <label>
+      <label class="mode-nav-item">
         <input type="radio" name="mode" id="mode-new" value="new" />
         Analysis
       </label>
-      <label>
+      <label class="mode-nav-item">
         <input type="radio" name="mode" id="mode-load" value="load" />
         Results / Run
       </label>
     </section>
 
     <section id="new-run-form" hidden>
+      <h2>Analysis</h2>
       <p id="start-analysis-cost-hint" class="cost-hint">
         Starting an analysis creates a new run and uses DeepSeek.
       </p>
@@ -94,6 +97,7 @@
     </section>
 
     <section id="load-run-form" hidden>
+      <h2>Results / Run</h2>
       <p id="load-run-readonly-hint" class="cost-hint">
         Load Run only opens saved results. It does not start a new analysis.
       </p>
@@ -266,9 +270,34 @@
 
       <div id="final-decision" hidden>
         <h3>Final decision</h3>
-        <p>Trader action: <span id="trader-action-label"></span></p>
-        <p>Draft rating: <span id="draft-rating-label"></span></p>
-        <p>Data quality flags: <span id="data-quality-flags-label"></span></p>
+        <div class="decision-group">
+          <h4>Company quality</h4>
+          <p>Draft rating: <span id="draft-rating-label"></span></p>
+        </div>
+        <div class="decision-group">
+          <h4>Trader action</h4>
+          <p>Trader action: <span id="trader-action-label"></span></p>
+        </div>
+        <div class="decision-group">
+          <h4>Data quality</h4>
+          <p>Data quality flags: <span id="data-quality-flags-label"></span></p>
+        </div>
+        <div class="decision-group" id="entry-decision-group" hidden>
+          <h4>Entry decision</h4>
+          <p>Entry decision: <span id="entry-decision-label"></span></p>
+          <p>Execution availability: <span id="execution-availability-label"></span></p>
+          <div id="wait-rationale" hidden>
+            <p>Why wait: <span id="why-wait-label"></span></p>
+            <p>What needs to change: <span id="what-needs-to-change-label"></span></p>
+            <p>Recheck trigger: <span id="recheck-trigger-label"></span></p>
+            <p>Review due: <span id="review-due-label"></span></p>
+          </div>
+        </div>
+        <div class="decision-group" id="position-decision-group" hidden>
+          <h4>Position decision</h4>
+          <p>Position decision: <span id="position-decision-label"></span></p>
+          <p>Exit reason: <span id="exit-reason-label"></span></p>
+        </div>
         <p><a id="report-link" href="#" target="_blank" rel="noopener">View complete report</a></p>
       </div>
     </section>

@@ -24,7 +24,14 @@ from typing import Annotated, Literal
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 
-from tradingagents.agents.schemas import PortfolioRating, TraderAction
+from tradingagents.agents.schemas import (
+    EntryDecision,
+    ExecutionAvailability,
+    ExitReason,
+    PortfolioRating,
+    PositionDecision,
+    TraderAction,
+)
 from tradingagents.dataflows.utils import safe_ticker_component
 
 # ---------------------------------------------------------------------------
@@ -273,6 +280,19 @@ class AnalysisManifest(_RunArtifactBase):
     data_quality_assessment: str = "not_available"
     data_quality_flags: list[str] = Field(default_factory=list)
     disclaimer_version: str = "research-only-v1"
+    # Governed report fields (additive optional transport): already-rendered
+    # values recovered from trader.md (entry semantics) and decision.md
+    # (position semantics) by ``report_field_parsing``. ``None`` when the
+    # report predates these governed fields or the model rendered none, so
+    # every older manifest round-trips unchanged.
+    entry_decision: EntryDecision | None = None
+    why_wait: str | None = None
+    what_needs_to_change: str | None = None
+    recheck_trigger: str | None = None
+    review_due: str | None = None
+    execution_availability: ExecutionAvailability | None = None
+    position_decision: PositionDecision | None = None
+    exit_reason: ExitReason | None = None
     # Phase 2F placeholders for a future Pradeep-style knowledge base /
     # rule-matching scanner. Pure passthrough or schema reservation -- none
     # of these are computed or consulted by anything in this codebase yet.

@@ -103,6 +103,32 @@ def _structural_disruption():
     )
 
 
+def _counter_thesis():
+    from tradingagents.scanners.traditional import Contradiction, CounterThesis, MajorAIJudgment
+
+    judgment = MajorAIJudgment(
+        judgment_id="counter",
+        finding="evidence-bearing counter finding",
+        evidence=(_canonical(),),
+        confidence_level="governed_high",
+        contradiction=Contradiction(False, False),
+    )
+    return CounterThesis(
+        competitive_advantage_erosion="reviewed",
+        new_entrant_or_technology_substitution="reviewed",
+        accounting_anomaly="reviewed",
+        management_narrative_conflict="reviewed",
+        customer_supplier_concentration="reviewed",
+        regulatory_geopolitical_risk="reviewed",
+        valuation_assumptions="reviewed",
+        bull_thesis="reviewed",
+        bear_thesis="reviewed",
+        disconfirming_evidence="reviewed",
+        thesis_break_conditions="reviewed",
+        major_judgments=(judgment,),
+    )
+
+
 def _traditional_result(*, selected: bool) -> TraditionalScanResult:
     metric = MetricEvaluation(
         metric_id="financial_reality",
@@ -917,3 +943,98 @@ def test_t14_t15_contract_does_not_require_live_portfolio_runtime():
         portfolio_context_ref=None,
     )
     assert decision.portfolio_context_ref is None
+
+
+# ---------------------------------------------------------------------------
+# E11 (UI transport): UnifiedSelection optional Traditional-only payloads.
+# structural_disruption / counter_thesis must round-trip without inventing any
+# cross-system field or combined score.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_unified_selection_old_roundtrip_remains_valid_without_payloads():
+    selection = validate_unified_candidate(_valid_mapping()).selections[0]
+
+    assert selection.structural_disruption is None
+    assert selection.counter_thesis is None
+    # A selection without the optional payloads serializes byte-identically to
+    # its pre-transport shape -- the payload keys are simply absent.
+    assert "structural_disruption" not in selection.to_dict()
+    assert "counter_thesis" not in selection.to_dict()
+
+    roundtripped = UnifiedSelection.from_mapping(selection.to_dict())
+    assert roundtripped.to_dict() == selection.to_dict()
+
+
+@pytest.mark.unit
+def test_traditional_structural_disruption_roundtrips_without_cross_system_invention():
+    selection = bind_traditional_selection(
+        _traditional_result(selected=True), _traditional_binding()
+    )
+    assert selection is not None
+
+    sd = selection.structural_disruption
+    assert isinstance(sd, dict)
+    assert sd["method_version"] == "sd-owner-v1"
+    questions = sd["questions"]
+    assert isinstance(questions, list)
+    assert len(questions) == 6
+    # No score / pass-fail / cross-system field is invented on the payload.
+    assert "score" not in sd
+    assert all(isinstance(question, dict) and "score" not in question for question in questions)
+
+    roundtripped = UnifiedSelection.from_mapping(selection.to_dict())
+    assert roundtripped.structural_disruption == sd
+    assert roundtripped.counter_thesis is None
+    assert roundtripped.to_dict() == selection.to_dict()
+
+
+@pytest.mark.unit
+def test_traditional_counter_thesis_roundtrips_when_threaded():
+    selection = bind_traditional_selection(
+        _traditional_result(selected=True),
+        _traditional_binding(),
+        counter_thesis=_counter_thesis(),
+    )
+    assert selection is not None
+
+    ct = selection.counter_thesis
+    assert isinstance(ct, dict)
+    assert ct["thesis_break_conditions"] == "reviewed"
+    judgments = ct["major_judgments"]
+    assert isinstance(judgments, list)
+    assert len(judgments) == 1
+    judgment = judgments[0]
+    assert isinstance(judgment, dict)
+    assert judgment["judgment_id"] == "counter"
+    assert judgment["confidence_level"] == "governed_high"
+    contradiction = judgment["contradiction"]
+    assert isinstance(contradiction, dict)
+    assert contradiction["present"] is False
+
+    roundtripped = UnifiedSelection.from_mapping(selection.to_dict())
+    assert roundtripped.counter_thesis == ct
+    assert roundtripped.structural_disruption == selection.structural_disruption
+    assert roundtripped.to_dict() == selection.to_dict()
+
+
+@pytest.mark.unit
+def test_non_traditional_selections_never_carry_traditional_payloads():
+    result = _pradeep_result(selected=True)
+    selection = bind_pradeep_selection(result, (_pradeep_binding(result.evidence_refs[0]),))
+    assert selection is not None
+    assert selection.structural_disruption is None
+    assert selection.counter_thesis is None
+    assert "structural_disruption" not in selection.to_dict()
+    assert "counter_thesis" not in selection.to_dict()
+
+    # A non-Traditional selection carrying a Traditional-only payload fails
+    # closed instead of inventing a cross-system payload.
+    pradeep_payload = _valid_mapping("PRADEEP")
+    pradeep_payload["selections"][0]["structural_disruption"] = {
+        "method_version": "x",
+        "questions": [],
+    }
+    with pytest.raises(UnifiedCandidateError, match="Traditional-only"):
+        validate_unified_candidate(pradeep_payload)

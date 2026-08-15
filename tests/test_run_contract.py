@@ -7,7 +7,14 @@ Schema-only: no filesystem I/O, no wiring into the real graph/CLI/reporting.
 import pytest
 from pydantic import ValidationError
 
-from tradingagents.agents.schemas import PortfolioRating, TraderAction
+from tradingagents.agents.schemas import (
+    EntryDecision,
+    ExecutionAvailability,
+    ExitReason,
+    PortfolioRating,
+    PositionDecision,
+    TraderAction,
+)
 from tradingagents.run_contract import (
     REPORT_TREE,
     AgentId,
@@ -40,6 +47,19 @@ SELECTED_AGENTS = [
     "portfolio_manager",
 ]
 
+# Governed report fields added as additive optional transport (run-result
+# transport). A pre-governed manifest omits these entirely.
+_GOVERNED_FIELDS = {
+    "entry_decision",
+    "why_wait",
+    "what_needs_to_change",
+    "recheck_trigger",
+    "review_due",
+    "execution_availability",
+    "position_decision",
+    "exit_reason",
+}
+
 
 def _manifest_dict(**overrides):
     base = {
@@ -64,6 +84,14 @@ def _manifest_dict(**overrides):
         "data_quality_assessment": "not_available",
         "data_quality_flags": [],
         "disclaimer_version": "research-only-v1",
+        "entry_decision": None,
+        "why_wait": None,
+        "what_needs_to_change": None,
+        "recheck_trigger": None,
+        "review_due": None,
+        "execution_availability": None,
+        "position_decision": None,
+        "exit_reason": None,
         "strategy_profile": None,
         "knowledge_version": None,
         "matched_rules": [],
@@ -303,6 +331,57 @@ def test_analysis_manifest_round_trip_matches_blueprint_example():
     expected = dict(payload)
     expected["created_at"] = dumped["created_at"]
     assert dumped == expected
+
+
+@pytest.mark.unit
+def test_analysis_manifest_old_roundtrip_remains_valid_with_governed_fields_absent():
+    # A pre-governed manifest (no entry/position/exit fields at all) must
+    # still parse and round-trip; every governed field stays None.
+    payload = {k: v for k, v in _manifest_dict().items() if k not in _GOVERNED_FIELDS}
+    manifest = AnalysisManifest(**payload)
+    assert manifest.entry_decision is None
+    assert manifest.why_wait is None
+    assert manifest.position_decision is None
+    assert manifest.exit_reason is None
+    assert manifest.execution_availability is None
+
+    dumped = manifest.model_dump(mode="json")
+    assert dumped["entry_decision"] is None
+    assert dumped["position_decision"] is None
+    assert dumped["exit_reason"] is None
+
+
+@pytest.mark.unit
+def test_analysis_manifest_governed_fields_parse_and_roundtrip_when_present():
+    manifest = AnalysisManifest(
+        **_manifest_dict(
+            entry_decision="WAIT",
+            why_wait="extended above the entry zone",
+            what_needs_to_change="pull back to support",
+            recheck_trigger="daily close below 20 SMA",
+            review_due="2026-08-20",
+            execution_availability="AVAILABLE",
+            position_decision="SELL",
+            exit_reason="THESIS_BROKEN",
+        )
+    )
+    assert manifest.entry_decision == EntryDecision.WAIT
+    assert manifest.why_wait == "extended above the entry zone"
+    assert manifest.what_needs_to_change == "pull back to support"
+    assert manifest.recheck_trigger == "daily close below 20 SMA"
+    assert manifest.review_due == "2026-08-20"
+    assert manifest.execution_availability == ExecutionAvailability.AVAILABLE
+    assert manifest.position_decision == PositionDecision.SELL
+    assert manifest.exit_reason == ExitReason.THESIS_BROKEN
+
+    dumped = manifest.model_dump(mode="json")
+    assert dumped["entry_decision"] == "WAIT"
+    assert dumped["why_wait"] == "extended above the entry zone"
+    assert dumped["position_decision"] == "SELL"
+    assert dumped["exit_reason"] == "THESIS_BROKEN"
+
+    # Round-trips through the exact on-disk JSON representation.
+    assert AnalysisManifest.model_validate_json(manifest.model_dump_json()) == manifest
 
 
 # ---------------------------------------------------------------------------

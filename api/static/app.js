@@ -38,6 +38,17 @@
   const draftRatingLabel = el("draft-rating-label");
   const dataQualityFlagsLabel = el("data-quality-flags-label");
   const reportLink = el("report-link");
+  const entryDecisionGroup = el("entry-decision-group");
+  const entryDecisionLabel = el("entry-decision-label");
+  const executionAvailabilityLabel = el("execution-availability-label");
+  const waitRationale = el("wait-rationale");
+  const whyWaitLabel = el("why-wait-label");
+  const whatNeedsToChangeLabel = el("what-needs-to-change-label");
+  const recheckTriggerLabel = el("recheck-trigger-label");
+  const reviewDueLabel = el("review-due-label");
+  const positionDecisionGroup = el("position-decision-group");
+  const positionDecisionLabel = el("position-decision-label");
+  const exitReasonLabel = el("exit-reason-label");
 
   let pollTimer = null;
   // Which run_id (if any) has been started/loaded this session. #run-view
@@ -141,6 +152,38 @@
     return flags.length ? flags.join(", ") : "(none)";
   }
 
+  // E11 (UI-10): render the already-computed Traditional Structural Disruption
+  // six-question assessment and AI Counter-Thesis as compact, auditable prose
+  // inside the existing selection/provenance cell -- never a new column, never
+  // a score, and only for selections that actually carry them.
+  function formatStructuralDisruption(sd) {
+    if (!sd) return "";
+    const questions = (sd.questions || [])
+      .map((q) => `${q.question}: ${q.conclusion}`)
+      .join("; ");
+    return `structural_disruption (${sd.method_version}): ${questions}`;
+  }
+
+  function formatCounterThesis(ct) {
+    if (!ct) return "";
+    const judgments = (ct.major_judgments || [])
+      .map((j) => `${j.judgment_id} [${j.confidence_level}]: ${j.finding}`)
+      .join("; ");
+    const parts = [];
+    if (judgments) parts.push(`judgments: ${judgments}`);
+    if (ct.thesis_break_conditions) parts.push(`thesis_break: ${ct.thesis_break_conditions}`);
+    return `counter_thesis: ${parts.join(" | ")}`;
+  }
+
+  function formatSelectionDisclosure(selection) {
+    return [
+      formatStructuralDisruption(selection.structural_disruption),
+      formatCounterThesis(selection.counter_thesis),
+    ]
+      .filter(Boolean)
+      .join(" | ");
+  }
+
   // E09: renders one candidate's full selection provenance -- system origin,
   // selection/producer identity, scanner/setup identity, matched/failed/
   // unknown rule why-selected evidence, evidence-id provenance, and temporal/
@@ -178,12 +221,14 @@
           ? `; rank: ${selection.system_rank.value} (${selection.system_rank.meaning}; ` +
             `higher_is_better=${selection.system_rank.higher_is_better})`
           : "";
+        const disclosure = formatSelectionDisclosure(selection);
         return (
           `${selection.selection_system}${setup} via ${selection.scanner_id} ` +
           `[${selection.selection_id} / ${selection.producer_version}] ` +
           `— matched: ${matched}; failed: ${failed}; unknown: ${unknown}; ` +
           `evidence_refs: ${evidence || "—"}; detected_at: ${selection.detected_at}; ` +
-          `data_as_of: ${selection.data_as_of}${rank}`
+          `data_as_of: ${selection.data_as_of}${rank}` +
+          (disclosure ? `; ${disclosure}` : "")
         );
       })
       .join(" | ");
@@ -206,6 +251,37 @@
     draftRatingLabel.textContent = manifest.draft_rating ?? "(none)";
     dataQualityFlagsLabel.textContent = formatDataQualityFlags(manifest.data_quality_flags);
     reportLink.href = `/api/runs/${encodeURIComponent(runId)}/reports/complete_report`;
+
+    // Governed entry decision (NOT_HELD semantics: BUY | WAIT | REVIEW) and
+    // its WAIT rationale -- rendered only when the optional field is present,
+    // never merged into the draft rating / trader action groups.
+    if (manifest.entry_decision != null) {
+      entryDecisionLabel.textContent = formatStatusLabel(manifest.entry_decision);
+      executionAvailabilityLabel.textContent =
+        manifest.execution_availability != null
+          ? formatStatusLabel(manifest.execution_availability)
+          : "—";
+      whyWaitLabel.textContent = manifest.why_wait ?? "—";
+      whatNeedsToChangeLabel.textContent = manifest.what_needs_to_change ?? "—";
+      recheckTriggerLabel.textContent = manifest.recheck_trigger ?? "—";
+      reviewDueLabel.textContent = manifest.review_due ?? "—";
+      waitRationale.hidden = safeStatusClass(manifest.entry_decision) !== "wait";
+      entryDecisionGroup.hidden = false;
+    } else {
+      entryDecisionGroup.hidden = true;
+    }
+
+    // Governed position decision (HELD semantics: HOLD | REDUCE | SELL |
+    // REVIEW) -- rendered only when the optional field is present.
+    if (manifest.position_decision != null) {
+      positionDecisionLabel.textContent = formatStatusLabel(manifest.position_decision);
+      exitReasonLabel.textContent =
+        manifest.exit_reason != null ? formatStatusLabel(manifest.exit_reason) : "—";
+      positionDecisionGroup.hidden = false;
+    } else {
+      positionDecisionGroup.hidden = true;
+    }
+
     finalDecision.hidden = false;
   }
 
